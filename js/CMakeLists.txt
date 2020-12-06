@@ -11,17 +11,23 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 include(tml-common)
 
 set(JSLIB_SOURCES
+	../src/archive.cpp
+	../src/archive.h
 	../src/bdd.cpp
 	../src/bdd.h
-	../src/binary.cpp
+	../src/bdd_ext.cpp
+	../src/char_defs.h
 	../src/defs.h
 	../src/dict.cpp
 	../src/dict.h
 	../src/driver.cpp
 	../src/driver.h
 	../src/err.h
+	../src/form.cpp
+	../src/form.h
 	../src/input.cpp
 	../src/input.h
+	../src/memory_map.h
 	../src/options.cpp
 	../src/options.h
 	../src/output.cpp
@@ -32,22 +38,30 @@ set(JSLIB_SOURCES
 	../src/save_csv.cpp
 	../src/tables.cpp
 	../src/tables.h
+	../src/tables_ext.cpp
+	../src/term.h
 	../src/transform.cpp
+	../src/transform_guards.cpp
+	../src/utils.cpp
 )
 
 set(JSLIB_COMPILE_OPTIONS
-	"$<$<CONFIG:DEBUG>:-O0;-DDEBUG;-g4>"
-	"$<$<CONFIG:RELEASE>:-O3;-DNDEBUG;-g0>"
+	"$<$<CONFIG:DEBUG>:-O0;-DDEBUG;-g4;-fno-exceptions>"
+	"$<$<CONFIG:RELEASE>:-O3;-DNDEBUG;-g0;-fno-exceptions>"
 )
-set(JSLIB_LINK_OPTIONS "--bind")
+set(JSLIB_LINK_OPTIONS "--bind --no-entry")
+string(APPEND JSLIB_LINK_OPTIONS " -s EXPORT_NAME='tml'")
+string(APPEND JSLIB_LINK_OPTIONS " -s MODULARIZE=1")
+string(APPEND JSLIB_LINK_OPTIONS " -s STRICT=1")
 string(APPEND JSLIB_LINK_OPTIONS " -s WASM=1")
 string(APPEND JSLIB_LINK_OPTIONS " -s ALLOW_MEMORY_GROWTH=1")
-string(APPEND JSLIB_LINK_OPTIONS " -s ASSERTIONS=1")
 string(APPEND JSLIB_LINK_OPTIONS " -s EXIT_RUNTIME=1")
-string(APPEND JSLIB_LINK_OPTIONS " -s WARN_UNALIGNED=1")
-string(APPEND JSLIB_LINK_OPTIONS " -s MODULARIZE_INSTANCE=1")
-string(APPEND JSLIB_LINK_OPTIONS " -s EXPORT_NAME='tml'")
-string(APPEND JSLIB_LINK_OPTIONS " -s DISABLE_EXCEPTION_CATCHING=0")
+string(APPEND JSLIB_LINK_OPTIONS " -s ERROR_ON_UNDEFINED_SYMBOLS=1")
+string(APPEND JSLIB_LINK_OPTIONS " -s DISABLE_EXCEPTION_THROWING=1")
+string(APPEND JSLIB_LINK_OPTIONS " -s DISABLE_EXCEPTION_CATCHING=1")
+string(APPEND JSLIB_LINK_OPTIONS " -s 'EXTRA_EXPORTED_RUNTIME_METHODS=[\"lengthBytesUTF8\",\"stringToUTF8\"]'")
+string(APPEND JSLIB_LINK_OPTIONS " -s ASSERTIONS=1")
+#string(APPEND JSLIB_LINK_OPTIONS " -s WARN_UNALIGNED=1")
 
 # tml.js library
 add_executable(tml)

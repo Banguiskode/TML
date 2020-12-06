@@ -17,6 +17,7 @@
 #include "math.h"
 using namespace std;
 
+
 //------------------------------------------------------------------------------
 // auxiliary functions
 int_t bdd_root(cr_spbdd_handle x) {
@@ -28,10 +29,31 @@ void bdd_size(cr_spbdd_handle x,  std::set<int_t>& s) {
 }
 
 //------------------------------------------------------------------------------
+
+spbdd_handle bdd_quantify(cr_spbdd_handle x, const std::vector<quant_t> &quants,
+		const size_t bits, const size_t n_args) {
+	return bdd_handle::get(bdd::bdd_quantify(x->b, 0, quants, bits, n_args));
+}
+
+spbdd_handle bdd_and_hl(cr_spbdd_handle x) {
+	return bdd_handle::get(bdd::bdd_and_hl(x->b));
+}
+
+spbdd_handle bdd_or_hl(cr_spbdd_handle x) {
+	return bdd_handle::get(bdd::bdd_or_hl(x->b));
+}
+
+spbdd_handle bdd_xor_hl(cr_spbdd_handle x) {
+	return bdd_handle::get(bdd::bdd_xor_hl(x->b));
+}
+
 spbdd_handle bdd_xor(cr_spbdd_handle x, cr_spbdd_handle y) {
 	return bdd_handle::get(bdd::bdd_xor(x->b,y->b));
 }
 
+spbdd_handle bdd_not(cr_spbdd_handle x) {
+	return bdd_handle::get(-x->b);
+}
 //------------------------------------------------------------------------------
 //over bdd bitwise operators
 spbdd_handle bdd_bitwise_and(cr_spbdd_handle x, cr_spbdd_handle y) {
@@ -79,6 +101,62 @@ spbdd_handle bdd_mult_dfs(cr_spbdd_handle x, cr_spbdd_handle y, size_t bits,
 
 // ----------------------------------------------------------------------------
 
+int_t bdd::bdd_quantify(int_t x, int_t bit, const std::vector<quant_t> &quants,
+		const size_t bits, const size_t n_args) {
+
+	if (x == T || x == F || bit == (int_t) quants.size() * (int_t) bits) return x;
+
+	bdd c = get(x);
+
+	int_t h,l;
+	if (c.v > (int_t) quants.size() * (int_t) bits) return x;
+	if (c.v > bit+1)
+		return bdd_quantify(x, bit+1, quants, bits, n_args);
+
+	size_t idx = bit/bits;
+
+	switch (quants[idx]) {
+		case quant_t::FA: {
+			if (c.l == F || c.h == F) return F;
+			h = bdd_quantify(c.h, bit+1, quants, bits, n_args);
+			if (h == F) return F;
+			l =	bdd_quantify(c.l, bit+1, quants, bits, n_args);
+			if (l == F) return F;
+			return x;
+		}
+		case quant_t::EX: {
+			if (c.l == F && c.h == F) return F;
+			h = bdd_quantify(c.h, bit+1, quants, bits, n_args);
+			l =	bdd_quantify(c.l, bit+1, quants, bits, n_args);
+			if (l == F && h == F) return F;
+			if (l == F || h == F) return add(c.v, h, l);
+			return x;
+		}
+		case quant_t::UN: {
+			if ((c.l == T && c.h == T) || (c.l == F && c.h == F))
+				//TODO: complete
+				return F;
+			break;
+		}
+		default: ;
+	}
+	return F;
+}
+
+int_t bdd::bdd_and_hl(int_t x) {
+	bdd b = get(x);
+	return bdd_and(b.h,b.l);
+}
+
+int_t bdd::bdd_or_hl(int_t x) {
+	bdd b = get(x);
+	return bdd_or( b.h, b.l);
+}
+int_t bdd::bdd_xor_hl(int_t x) {
+	bdd b = get(x);
+	return bdd_xor( b.h, b.l);
+}
+
 void bdd::bdd_sz_abs(int_t x, set<int_t>& s) {
 	if (!s.emplace(abs(x)).second) return;
 	bdd b = get(x);
@@ -111,7 +189,7 @@ int_t bdd::bitwiseAND(int_t a_in, int_t b_in) {
 			pos = a.v+2;
 		else
 			pos = b.v + 1;
-		//o::dbg() << L"--- pos = " << pos << L"\n";
+		//o::dbg() << "--- pos = " << pos << "\n";
 
 		int_t c = add(pos,
 					  bitwiseAND(a.h,  b.h ),
@@ -171,7 +249,7 @@ int_t bdd::bitwiseXOR(int_t a_in, int_t b_in) {
 			pos = a.v + 2;
 		else
 			pos = b.v + 1;
-		//o::dbg() << L"--- pos = " << pos << L"\n";
+		//o::dbg() << "--- pos = " << pos << "\n";
 
 		int_t c = add(pos,
 					  bdd_or(bitwiseXOR(a.h, b.l), bitwiseXOR(a.l, b.h)),
@@ -283,7 +361,7 @@ int_t bdd::solve_pathXL(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			t_pathv aux_pathX_a = pathX_a;
 			#ifdef VERBOSE
-			wcout << L" ---solve XL pos = " << pos << L"\n";
+			COUT << " ---solve XL pos = " << pos << "\n";
 			#endif
 			pathX_a.push_back(L);
 			int_t c0;
@@ -291,7 +369,7 @@ int_t bdd::solve_pathXL(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			pathX_a = aux_pathX_a;
 			#ifdef VERBOSE
-			wcout << L" ---solve XL pos = " << pos << L"\n";
+			COUT << " ---solve XL pos = " << pos << "\n";
 			#endif
 			pathX_a.push_back(H);
 			int_t c1;
@@ -308,7 +386,7 @@ int_t bdd::solve_pathXL(size_t i, size_t bits, bool carry, size_t n_args, size_t
 			t_path aux = pathX_b.front();
 			pathX_b.erase(pathX_b.begin());
 			#ifdef VERBOSE
-			wcout << L" ---solve XL pos = " << pos << L"\n";
+			COUT << " ---solve XL pos = " << pos << "\n";
 			#endif
 			int_t c0;
 			if (!carry) {
@@ -347,7 +425,7 @@ int_t bdd::solve_pathLX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			t_pathv aux_pathX_b = pathX_b;
 			#ifdef VERBOSE
-			wcout << L" ---solve LX pos = " << pos << L"\n";
+			COUT << " ---solve LX pos = " << pos << "\n";
 			#endif
 			pathX_b.push_back(L);
 			int_t c0;
@@ -355,7 +433,7 @@ int_t bdd::solve_pathLX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			pathX_b = aux_pathX_b;
 			#ifdef VERBOSE
-			wcout << L" ---solve LX pos = " << pos << L"\n";
+			COUT << " ---solve LX pos = " << pos << "\n";
 			#endif
 			pathX_b.push_back(H);
 			int_t c1;
@@ -371,7 +449,7 @@ int_t bdd::solve_pathLX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 			t_path aux = pathX_a.front();
 			pathX_a.erase(pathX_a.begin());
 			#ifdef VERBOSE
-			wcout << L" ---solve LX pos = " << pos << L"\n";
+			COUT << " ---solve LX pos = " << pos << "\n";
 			#endif
 			int_t c0;
 			if (!carry) {
@@ -411,7 +489,7 @@ int_t bdd::solve_pathXH(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			t_pathv aux_pathX_a = pathX_a;
 			#ifdef VERBOSE
-			wcout << L" ---solve XH pos = " << pos << L"\n";
+			COUT << " ---solve XH pos = " << pos << "\n";
 			#endif
 			pathX_a.push_back(L);
 			int_t c0, c1;
@@ -422,7 +500,7 @@ int_t bdd::solve_pathXH(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			pathX_a = aux_pathX_a;
 			#ifdef VERBOSE
-			wcout << L" ---solve XH pos = " << pos << L"\n";
+			COUT << " ---solve XH pos = " << pos << "\n";
 			#endif
 			pathX_a.push_back(H);
 
@@ -439,7 +517,7 @@ int_t bdd::solve_pathXH(size_t i, size_t bits, bool carry, size_t n_args, size_t
 			t_path aux = pathX_b.front();
 			pathX_b.erase(pathX_b.begin());
 			#ifdef VERBOSE
-			wcout << L" ---solve XH pos = " << pos << L"\n";
+			COUT << " ---solve XH pos = " << pos << "\n";
 			#endif
 			int_t c0;
 			if (!carry) {
@@ -480,7 +558,7 @@ int_t bdd::solve_pathHX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			t_pathv aux_pathX_b = pathX_b;
 			#ifdef VERBOSE
-			wcout << L" ---solve HX pos = " << pos << L"\n";
+			COUT << " ---solve HX pos = " << pos << "\n";
 			#endif
 			pathX_b.push_back(L);
 			int_t c0, c1;
@@ -491,7 +569,7 @@ int_t bdd::solve_pathHX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 
 			pathX_b = aux_pathX_b;
 			#ifdef VERBOSE
-			wcout << L" ---solve HX pos = " << pos << L"\n";
+			COUT << " ---solve HX pos = " << pos << "\n";
 			#endif
 			pathX_b.push_back(H);
 
@@ -508,7 +586,7 @@ int_t bdd::solve_pathHX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 			t_path aux = pathX_a.front();
 			pathX_a.erase(pathX_a.begin());
 			#ifdef VERBOSE
-			wcout << L" ---solve HX pos = " << pos << L"\n";
+			COUT << " ---solve HX pos = " << pos << "\n";
 			#endif
 			int_t c0;
 			if (!carry) {
@@ -558,7 +636,7 @@ int_t bdd::solve_pathXX(size_t i, size_t bits, bool carry, size_t n_args, size_t
 		}
 		else {
 			#ifdef VERBOSE
-			wcout << L" ---solve XX pos = " << pos << L"\n";
+			COUT << " ---solve XX pos = " << pos << "\n";
 			#endif
 			t_path aux;
 			int_t c0,c1,ch = F, cl = F;
@@ -647,7 +725,7 @@ int_t bdd::solve_path(size_t i, size_t bits, bool carry, size_t n_args, size_t d
 	int_t c = T;
 	int_t pos = i * n_args + 3;
 	#ifdef VERBOSE
-	wcout << L" ---solve pos = " << pos << L"\n";
+	COUT << " ---solve pos = " << pos << "\n";
 	#endif
 
 	if (!carry) {
@@ -668,7 +746,7 @@ int_t bdd::solve_path(size_t i, size_t bits, bool carry, size_t n_args, size_t d
 			c = solve_pathLX(i,bits, false, n_args, depth, path_a, path_b, pathX_a, pathX_b);
 		else if(path_a[bits-i-1] == X && path_b[bits-i-1] == X)
 			c = solve_pathXX(i, bits, false, n_args, depth, path_a, path_b, pathX_a, pathX_b);
-		else wcout << L" --- ERROR" << L"\n";
+		else COUT << " --- ERROR" << "\n";
 	}
 	else  {
 		if(path_a[bits-i-1] == L && path_b[bits-i-1] == L)
@@ -688,12 +766,12 @@ int_t bdd::solve_path(size_t i, size_t bits, bool carry, size_t n_args, size_t d
 			c = solve_pathLX(i,bits, true, n_args, depth, path_a, path_b, pathX_a, pathX_b);
 		else if(path_a[bits-i-1] == X && path_b[bits-i-1] == X)
 			c = solve_pathXX(i, bits, true, n_args, depth, path_a, path_b, pathX_a, pathX_b);
-		else wcout << L" --- ERROR" << L"\n";
+		else COUT << " --- ERROR" << "\n";
 	}
 
-	//wcout << L"##[C" << pos << L"]:"<< endl;
-	//out(wcout, c);
-	//wcout <<endl<<endl;
+	//COUT << "##[C" << pos << "]:"<< endl;
+	//out(COUT, c);
+	//COUT <<endl<<endl;
 
 	return c;
 }
@@ -850,7 +928,7 @@ int_t bdd::balance_paths(t_pathv &next_path_a, t_pathv &next_path_b, size_t bits
 		if (aux_path_a.size() == 0 && aux_path_b.size() == 0) return 0;
 		if (aux_path_a.size() != 0) return -1;
 		if (aux_path_b.size() != 0) return 1;
-		wcout << L"ERROR" << endl;
+		COUT << "ERROR" << endl;
 
 	}
 
@@ -945,9 +1023,9 @@ void bdd::ADDER_BE(int_t a_in, int_t b_in, size_t bits, size_t depth,
 				next_path_b = path_b;
 			}
 
-			//wcout << L"##[ C]:" << endl;
-			//out(wcout, aux);
-			//wcout <<endl<<endl;
+			//COUT << "##[ C]:" << endl;
+			//out(COUT, aux);
+			//COUT <<endl<<endl;
 
 			c = bdd_or(c, aux);
 
@@ -972,11 +1050,11 @@ int_t bdd::SHLx(int_t b_in, size_t x, size_t bits, size_t n_args) {
 	for (size_t i = 0; i < bits ; i++) {
 
 		if (tbits-1 < n_args*(i+x)+1 ) {
-			//wcout << perm1[n_args*i+1]+1 << L" --- " << n_args*(i+x)+1+1 << L"\n";
+			//COUT << perm1[n_args*i+1]+1 << " --- " << n_args*(i+x)+1+1 << "\n";
 			perm1[n_args*i+1] = n_args*(i+x)+1 ;
 		}
 		else {
-			//wcout << perm1[n_args*i+1]+1 << L" --- " << perm1[n_args*(i+x)+1]+1 << L"\n";
+			//COUT << perm1[n_args*i+1]+1 << " --- " << perm1[n_args*(i+x)+1]+1 << "\n";
 			perm1[n_args*i+1] = perm1[n_args*(i+x)+1];
 		}
 	}
@@ -1032,7 +1110,7 @@ int_t bdd::COPY_ARG2ARG(int_t a , size_t arg_a, size_t arg_b, size_t bits, size_
 	int_t b;
 	uints perm = perm_init(bits*n_args);
 	for (size_t i = 0; i < bits; i++) {
-		//wcout << perm[i*n_args + arg_a]+1 << L" --- " << i*n_args + arg_b +1 << L"\n";
+		//COUT << perm[i*n_args + arg_a]+1 << " --- " << i*n_args + arg_b +1 << "\n";
 		perm[i*n_args + arg_a] = i*n_args + arg_b;
 	}
 	b = bdd_permute(a, perm, memos_perm[perm]);
@@ -1048,7 +1126,7 @@ int_t bdd::ADDER_ACCS(int_t b_in, int_t acc, size_t depth, size_t bits, size_t n
 	perm1 = perm_init(ext_bits*n_args);
 
 	for (size_t i = 0; i < ext_bits*n_args; i++) {
-		//wcout << perm1[i]+1 << L" --- " << ((ext_bits-1-(i/n_args))*n_args) + i % n_args + 1<< L"\n";
+		//COUT << perm1[i]+1 << " --- " << ((ext_bits-1-(i/n_args))*n_args) + i % n_args + 1<< "\n";
 		perm1[i] = ((ext_bits-1-(i/n_args))*n_args) + i % n_args;
 	}
 
@@ -1064,9 +1142,9 @@ int_t bdd::ADDER_ACCS(int_t b_in, int_t acc, size_t depth, size_t bits, size_t n
 	}
 
 	int_t b_aux = SHLx(b_in, depth, bits, n_args);
-	//wcout << L"##[baux]:" << endl;
-	//out(wcout, b_aux);
-	//wcout <<endl<<endl;
+	//COUT << "##[baux]:" << endl;
+	//out(COUT, b_aux);
+	//COUT <<endl<<endl;
 
 	aux_ext = T;
 	for (size_t i = bits; i < ext_bits ; i++) {
@@ -1074,9 +1152,9 @@ int_t bdd::ADDER_ACCS(int_t b_in, int_t acc, size_t depth, size_t bits, size_t n
 		aux_ext = bdd_and(aux_ext, add(pos_z, F, T));
 	}
 	int_t acc_aux = bdd_and(acc,aux_ext);
-	//wcout << L"##[acc_aux]:" << endl;
-	//out(wcout, acc_aux);
-	//wcout <<endl<<endl;
+	//COUT << "##[acc_aux]:" << endl;
+	//out(COUT, acc_aux);
+	//COUT <<endl<<endl;
 
 	int_t aux = F;
 
@@ -1085,19 +1163,19 @@ int_t bdd::ADDER_ACCS(int_t b_in, int_t acc, size_t depth, size_t bits, size_t n
 		aux = COPY_ARG2ARG(b_aux, 1,2,ext_bits, n_args);
 	else {
 		b_aux = bdd_permute(b_aux, perm1, memos_perm[perm1]);
-		//wcout << L"##[baux inv]:" << endl;
-		//out(wcout, b_aux);
-		//wcout <<endl<<endl;
+		//COUT << "##[baux inv]:" << endl;
+		//out(COUT, b_aux);
+		//COUT <<endl<<endl;
 		acc_aux = bdd_permute(acc_aux, perm1, memos_perm[perm1]);
-		//wcout << L"##[acc_aux inv]:" << endl;
-		//out(wcout, acc_aux);
-		//wcout <<endl<<endl;
+		//COUT << "##[acc_aux inv]:" << endl;
+		//out(COUT, acc_aux);
+		//COUT <<endl<<endl;
 		ADDER_BE(b_aux, acc_aux, ext_bits, depth, n_args, aux);
 	}
 
-	//wcout << L"##[adder_be]:" << endl;
-	//out(wcout, aux);
-	//wcout <<endl<<endl;
+	//COUT << "##[adder_be]:" << endl;
+	//out(COUT, aux);
+	//COUT <<endl<<endl;
 
 	return aux;
 }
@@ -1143,9 +1221,9 @@ void bdd::MULT_DFS(int_t a_in, int_t b_in, int_t *accs, size_t depth, size_t bit
 		else {
 			accs[depth] = accs[depth-1];
 		}
-		//wcout << L"##[accs " << depth << L"]:" << endl;
-		//out(wcout, accs[depth]);
-		//wcout <<endl<<endl;
+		//COUT << "##[accs " << depth << "]:" << endl;
+		//out(COUT, accs[depth]);
+		//COUT <<endl<<endl;
 
 		MULT_DFS(a.l, b_in, accs, depth+1, bits, n_args, c);
 	}
@@ -1158,9 +1236,9 @@ void bdd::MULT_DFS(int_t a_in, int_t b_in, int_t *accs, size_t depth, size_t bit
 		else
 			accs[depth] = ADDER_ACCS(b_in, accs[depth-1], depth, bits, n_args);
 
-		//wcout << L"##[accs " << depth << L"]:" << endl;
-		//out(wcout, accs[depth]);
-		//wcout <<endl<<endl;
+		//COUT << "##[accs " << depth << "]:" << endl;
+		//out(COUT, accs[depth]);
+		//COUT <<endl<<endl;
 
 		MULT_DFS(a.h, b_in, accs, depth+1, bits, n_args, c);
 	}
@@ -1173,7 +1251,7 @@ void bdd::MULT_DFS(int_t a_in, int_t b_in, int_t *accs, size_t depth, size_t bit
 //	  int_t c = 0;
 //	  uint_t pos = 0;
 //
-//	  o::dbg() << L" -- a.v = " << a.v << L", b.v = " <<  b.v  << L"\n";
+//	  o::dbg() << " -- a.v = " << a.v << ", b.v = " <<  b.v  << "\n";
 //
 //	  //XXX: assumes var a < var b
 //	  if (a.v > b.v + 1 && b.v != 0) {
@@ -1188,7 +1266,7 @@ void bdd::MULT_DFS(int_t a_in, int_t b_in, int_t *accs, size_t depth, size_t bit
 //	  else
 //	    pos = b.v + 1;
 //
-//	  o::dbg() << L" ------------------- pos = " << pos << L"\n";
+//	  o::dbg() << " ------------------- pos = " << pos << "\n";
 //
 //	  // ---------------------------------------------------------------------------
 //

@@ -24,6 +24,7 @@
 #include <fstream>
 #include "driver.h"
 #include "err.h"
+#include "archive.h"
 
 #ifdef __EMSCRIPTEN__
 #include "../js/embindings.h"
@@ -31,21 +32,12 @@
 
 using namespace std;
 
-wostream& operator<<(wostream& os, const pair<cws, size_t>& p);
-
-namespace o {
-wostream& out() { static wostream& os = output::to(L"output");      return os; }
-wostream& err() { static wostream& os = output::to(L"error");       return os; }
-wostream& inf() { static wostream& os = output::to(L"info");        return os; }
-wostream& dbg() { static wostream& os = output::to(L"debug");       return os; }
-wostream& repl(){ static wostream& os = output::to(L"repl-output"); return os; }
-wostream& ms()  { static wostream& os = output::to(L"benchmarks");  return os; }
-wostream& dump(){ static wostream& os = output::to(L"dump");        return os; }
-}
+template <typename T>
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const pair<ccs, size_t>& p);
 
 void driver::transform_len(raw_term& r, const strs_t& s) {
 	for (size_t n = 1; n < r.e.size(); ++n)
-		if (	r.e[n].type == elem::SYM && r.e[n].e == L"len" &&
+		if (	r.e[n].type == elem::SYM && r.e[n].e == "len" &&
 			n+3 < r.e.size() &&
 			r.e[n+1].type == elem::OPENP &&
 			r.e[n+2].type == elem::SYM &&
@@ -55,34 +47,27 @@ void driver::transform_len(raw_term& r, const strs_t& s) {
 //			if (it == s.end()) parse_error(err_len, r.e[n+2].e);
 			r.e.erase(r.e.begin()+n,r.e.begin()+n+4),
 			r.e.insert(r.e.begin()+n, elem(len)),
-			r.calc_arity();
+			r.calc_arity(current_input);
 		}
 }
 
 size_t driver::load_stdin() {
-	wstringstream ss;
-	std_input = ((ss << wcin.rdbuf()), ss.str());
-	return std_input.size();
+	ostringstream_t ss; ss << CIN.rdbuf();
+	pd.std_input = to_string_t(ws2s(ss.str()));
+	return pd.std_input.size();
 }
 
-wstring s2ws(const std::string& s) {
-	return std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(s);
-}
+void unquote(string_t& str);
 
-string ws2s(const wstring& s) {
-	return std::wstring_convert<std::codecvt_utf8<wchar_t>>().to_bytes(s);
-}
-
-void unquote(wstring& str);
-
-wstring driver::directive_load(const directive& d) {
-	wstring str(d.arg[0]+1, d.arg[1]-d.arg[0]-2);
+string_t driver::directive_load(const directive& d) {
+	string_t str(d.arg[0]+1, d.arg[1]-d.arg[0]-2);
 	switch (d.type) {
-		case directive::FNAME: return file_read(str);
-		case directive::STDIN: return move(std_input);
+		case directive::FNAME:
+			return to_string_t(input::file_read(to_string(str)));
+		case directive::STDIN: return move(pd.std_input);
 		default: return unquote(str), str;
 	}
-	throw 0; // unreachable
+	DBGFAIL;
 }
 
 void driver::directives_load(raw_prog& p, lexeme& trel) {
@@ -93,8 +78,9 @@ void driver::directives_load(raw_prog& p, lexeme& trel) {
 		case directive::TRACE: trel = d.rel.e; break;
 		case directive::CMDLINE:
 			if (d.n < opts.argc())
-				pd.strs.emplace(d.rel.e, opts.argv(d.n));
-			else parse_error(err_num_cmdline, L""); // FIXME
+				pd.strs.emplace(d.rel.e,
+					to_string_t(opts.argv(d.n)));
+			else parse_error(err_num_cmdline);
 			break;
 /*		case directive::STDOUT: pd.out.push_back(get_term(d.t,pd.strs));
 					break;
@@ -108,9 +94,9 @@ void driver::directives_load(raw_prog& p, lexeme& trel) {
 		}
 }
 
-void driver::transform(raw_progs& rp, size_t n, const strs_t& /*strtrees*/) {
+bool driver::transform(raw_prog& rp, const strs_t& /*strtrees*/) {
 	lexeme trel = { 0, 0 };
-	directives_load(rp.p[n], trel);
+	directives_load(rp, trel);
 	auto get_vars = [this](const raw_term& t) {
 		for (const elem& e : t.e)
 			if (e.type == elem::VAR)
@@ -124,7 +110,7 @@ void driver::transform(raw_progs& rp, size_t n, const strs_t& /*strtrees*/) {
 					get_vars(t);
 		}
 	};
-	for (const raw_prog& p : rp.p) get_all_vars(p);
+	get_all_vars(rp);
 //	for (auto x : pd.strs)
 //		if (!has(transformed_strings, x.first))
 //			transform_string(x.second, rp.p[n], x.first),
@@ -133,73 +119,68 @@ void driver::transform(raw_progs& rp, size_t n, const strs_t& /*strtrees*/) {
 //		if (!has(transformed_strings, x.first))
 //			transform_string(x.second, rp.p[n], x.first),
 //			transformed_strings.insert(x.first);
-	if (!rp.p[n].g.empty()) //{
-		if (pd.strs.size() > 1) er(err_one_input);
+	if (!rp.g.empty()) //{
+		if (pd.strs.size() > 1)
+			return throw_runtime_error(err_one_input);
 //		else transform_grammar(rp.p[n], pd.strs.begin()->first,
 //			pd.strs.begin()->second.size());
 //	}
-//	if (opts.enabled(L"sdt"))
+//	if (opts.enabled("sdt"))
 //		for (raw_prog& p : rp.p)
 //			p = transform_sdt(move(p));
 #ifdef TRANSFORM_BIN_DRIVER
-	if (opts.enabled(L"bin"))
+	if (opts.enabled("bin"))
 		for (raw_prog& p : rp.p)
 			transform_bin(p);
 #endif
 //	if (trel[0]) transform_proofs(rp.p[n], trel);
 	//o::out()<<rp.p[n]<<endl;
 //	if (pd.bwd) rp.p.push_back(transform_bwd(rp.p[n]));
+	for (auto& np : rp.nps) if (!transform(np, pd.strs)) return false;
+	return true;
 }
 
 void driver::output_pl(const raw_prog& p) const {
-	if (opts.enabled(L"xsb"))     print_xsb    (output::to(L"xsb"),     p);
-	if (opts.enabled(L"swipl"))   print_swipl  (output::to(L"swipl"),   p);
-	if (opts.enabled(L"souffle")) print_souffle(output::to(L"souffle"), p);
+	if (opts.enabled("xsb"))     print_xsb(o::to("xsb"), p);
+	if (opts.enabled("swipl"))   print_swipl(o::to("swipl"), p);
+	if (opts.enabled("souffle")) print_souffle(o::to("souffle"), p);
 }
 
-bool driver::prog_run(raw_progs& rp, size_t n, size_t steps,
-	size_t break_on_step)
-{
+bool driver::prog_run(raw_prog& p, size_t steps, size_t break_on_step) {
 //	pd.clear();
-	//DBG(o::out() << L"original program:"<<endl<<p;)
+	//DBG(o::out() << "original program:"<<endl<<p;)
 //	strtrees.clear(), get_dict_stats(rp.p[n]), add_rules(rp.p[n]);
 	clock_t start, end;
 	size_t step = nsteps();
 	measure_time_start();
-	bool fp = tbl->run_prog(rp.p[n], pd.strs, steps, break_on_step);
-	o::ms() << L"# elapsed: ";
+	if (opts.enabled("guards")) {
+		tbl->transform_guards(p);
+		if (opts.enabled("transformed")) o::to("transformed")
+			<< "after transform_guards:\n" << p << endl<<endl;
+	}
+	bool fp = tbl->run_prog(p, pd.strs, steps, break_on_step);
+	o::ms() << "# elapsed: ";
 	measure_time_end();
+	if (tbl->error) error = true;
 	pd.elapsed_steps = nsteps() - step;
-	//if (pd.elapsed_steps > 0 && steps && pd.elapsed_steps > steps) throw 0;
 //	for (auto x : prog->strtrees_out)
 //		strtrees.emplace(x.first, get_trees(prog->pd.strtrees[x.first],
 //					x.second, prog->rng.bits));
 	return fp;
 }
 
-void driver::add(wstring& prog, bool newseq) {
-	rp.parse(prog, tbl->get_dict(), newseq);
-	if (!newseq) transform(rp, pd.n, pd.strs);
+bool driver::add(input* in) {
+	if (!rp.parse(in, tbl->get_dict())) return !(error = true);
+	transform(rp.p, pd.strs);
+	return true;
 }
 
-void driver::list(wostream& os, size_t n) {
-	size_t e = n ? n-- : rp.p.size();
-	if (e > rp.p.size()) { os<<L"# no such program exist"<<endl; return; }
-	for (; n != e; ++n)
-		os<<L"# Listing program "<<(n + 1)<<L":\n{\n"<<rp.p[n]<<"}\n";
-	os << flush;
+template <typename T>
+void driver::list(std::basic_ostream<T>& os, size_t /*n*/) {
+	os << rp.p << endl;
 }
-
-void driver::new_sequence() {
-	//DBG(o::dbg() << L"new sequence" << endl;)
-	transform(rp, pd.n, pd.strs);
-	raw_prog &p = rp.p[pd.n];
-	for (const wstring& s : str_bltins) p.builtins.insert(get_lexeme(s));
-	output_pl(p);
-	if (opts.enabled(L"t")) output::to(L"transformed")
-		<< L"# Transformed program " << pd.n + 1 << L":" << endl
-		<< L'{' << endl << p << L'}' << endl;
-}
+template void driver::list(std::basic_ostream<char>&, size_t);
+template void driver::list(std::basic_ostream<wchar_t>&, size_t);
 
 void driver::restart() {
 	pd.n = 0;
@@ -207,83 +188,109 @@ void driver::restart() {
 	running = true;
 }
 
-bool driver::run(size_t steps, size_t break_on_step, bool break_on_fp) {
-	try {
-		if (!rp.p.size()) return true;
-		if (!running) restart();
-next_sequence:
-		if (nsteps() == pd.start_step) new_sequence();
-		if (opts.disabled(L"run") && opts.disabled(L"repl"))
-			return true;
-		bool fp = prog_run(rp, pd.n, steps, break_on_step);
-		if (fp) {
-			//DBG(if (opts.enabled(L"dump")) out(o::dump());)
-			if (pd.n == rp.p.size()-1) // all progs fp
-				return result = true, true;
-			++pd.n;
-			pd.start_step = nsteps();
-			if (steps && steps >= pd.elapsed_steps)
-				if (!(steps -= pd.elapsed_steps)) return false;
-			if ((break_on_step && nsteps() == break_on_step)
-				|| break_on_fp) return false;
-			goto next_sequence;
-		}
-	} catch (unsat_exception& e) {
-		o::out() << s2ws(string(e.what())) << endl;
-		result = false;
+bool driver::run(size_t steps, size_t break_on_step) {
+	if (!running) restart();
+	if (nsteps() == pd.start_step) {
+		//transform(rp.p, pd.strs);
+		for (const string& s : str_bltins)
+			rp.p.builtins.insert(get_lexeme(s));
+		output_pl(rp.p);
 	}
-	return false;
+	if (opts.disabled("run") && opts.disabled("repl")) return true;
+	bool fp = prog_run(rp.p, steps, break_on_step);
+	if (fp) result = true;
+	return fp;
 }
 
-bool driver::step(size_t steps, size_t break_on_step, bool break_on_fp) {
-	return run(steps, break_on_step, break_on_fp);
+bool driver::step(size_t steps, size_t break_on_step) {
+	return run(steps, break_on_step);
 }
 
-void driver::info(wostream& os) {
-	size_t l = rp.p.size();
-	os<<L"# prog n:    \t" << (pd.n+1) <<L" of: " << (l>0?l:0) << endl;
-	os<<L"# step:      \t" << nsteps() <<L" - " << pd.start_step <<L" = "
-		<< (nsteps() - pd.start_step) << L" ("
-		<< (running ? L"" : L"not ") << L"running)" << endl;
-	bdd::stats(os<<L"# bdds:     \t")<<endl;
-	//DBG(os<<L"# opts:    \t" << opts << endl;)
+template <typename T>
+void driver::info(std::basic_ostream<T>& os) {
+	os<<"# step:      \t" << nsteps() <<" - " << pd.start_step <<" = "
+		<< (nsteps() - pd.start_step) << " ("
+		<< (running ? "" : "not ") << "running)" << endl;
+	bdd::stats(os<<"# bdds:     \t")<<endl;
+	//DBG(os<<"# opts:    \t" << opts << endl;)
+}
+template void driver::info(std::basic_ostream<char>&);
+template void driver::info(std::basic_ostream<wchar_t>&);
+
+size_t driver::size() {
+	return archive::size(*this);
 }
 
-void driver::init() {
-	output::create(L"output",      L".out.tml");
-	output::create(L"error",       L".error.log");
-	output::create(L"info",        L".info.log");
-	output::create(L"debug",       L".debug.log");
-	output::create(L"dump",        L".dump.tml");
-	output::create(L"benchmarks",  L".benchmarks.log"); // o::ms()
-	output::create(L"transformed", L".trans.tml");
-	output::create(L"repl-output", L".repl.out.log");
-	output::create(L"xsb",         L".P");
-	output::create(L"swipl",       L".pl");
-	output::create(L"souffle",     L".souffle");
-	bdd::init();
+void driver::db_load(std::string filename) {
+	load_archives.emplace_back(archive::type::BDD, filename, 0, false);
+	load_archives.back() >> *this;
 }
 
-driver::driver(wstring s, options o) : rp(), opts(o) {
+void driver::db_save(std::string filename) {
+	archive ar(archive::type::BDD, filename, archive::size(*this), true);
+	ar << *this;
+}
+
+void driver::load(std::string filename) {
+	if (!ii->size()) {
+		load_archives.emplace_back(archive::type::DRIVER, filename,0,0);
+		if (!load_archives.back().error) load_archives.back() >> *this;
+		return;
+	}
+	error = true;
+	throw_runtime_error(
+		"Loading into a running program is not yet supported."); // TODO
+}
+
+void driver::save(std::string filename) {
+	archive ar(archive::type::DRIVER, filename, archive::size(*this), true);
+	ar << *this;
+}
+
+void driver::read_inputs() {
+	//COUT << "read_inputs() current_input: " << current_input << " next_input: " << (current_input ? current_input->next() : 0) << endl;
+	while (current_input && current_input->next()) {
+		current_input = current_input->next();
+		if (!add(current_input)) return;
+		++current_input_id;
+		//COUT << "current_inputid: " << current_input_id << endl;
+	}
+}
+
+driver::driver(string s, const options &o) : rp(), opts(o) {
 	dict_t dict;
-	// parse outside the rp's ctor
-	rp.parse(s, dict);
+
+	// inject inputs from opts to driver and dict (needed for archiving)
+	dict.set_inputs(ii = opts.get_inputs());
+
+	if (s.size()) opts.parse(strings{ "-ie", s });
+
 	// we don't need the dict any more, tables owns it from now on...
-	tbl = new tables(move(dict), opts.enabled(L"proof"), 
-		opts.enabled(L"optimize"), opts.enabled(L"bin"), opts.enabled(L"t"));
-	set_print_step(opts.enabled(L"ps"));
-	set_print_updates(opts.enabled(L"pu"));
-	set_populate_tml_update(opts.enabled(L"tml_update"));
+	tbl = new tables(move(dict), opts.enabled("proof"), 
+		opts.enabled("optimize"), opts.enabled("bin"),
+		opts.enabled("t"), opts.enabled("regex"), opts.enabled("kg"));
+	set_print_step(opts.enabled("ps"));
+	set_print_updates(opts.enabled("pu"));
+	set_populate_tml_update(opts.enabled("tml_update"));
+	set_regex_level(opts.get_int("regex-level"));
+	if (!ii) return;
+	current_input = ii->first();
+	if (current_input && !add(current_input)) return;
+	read_inputs();
 }
-driver::driver(FILE *f,   options o) : driver(file_read_text(f), o) {}
-driver::driver(char *s,   options o) : driver(s2ws(string(s)), o) {}
-driver::driver(options o)            : driver(o.input(), o) {}
-driver::driver(FILE *f)              : driver(f, options()) {}
-driver::driver(wstring s)            : driver(s, options()) {}
-driver::driver(char *s)              : driver(s, options()) {}
+
+driver::driver(FILE *f, const options &o) : driver(input::file_read_text(f),o){}
+driver::driver(string_t s, const options& o)    : driver(to_string(s), o) {}
+driver::driver(const char *s, const options &o) : driver(string(s), o) {}
+driver::driver(ccs   s, const options &o)       : driver(string_t(s), o) {}
+driver::driver(const options &o)                : driver(string(), o) {}
+driver::driver(string s)                        : driver(s, options()) {}
+driver::driver(FILE *f)                         : driver(f, options()) {}
+driver::driver(string_t s)                      : driver(to_string(s)) {}
+driver::driver(const char *s)                   : driver(s, options()) {}
+driver::driver(ccs s)                           : driver(string_t(s)) {}
 
 driver::~driver() {
 	if (tbl) delete tbl;
-	for (auto x : strs_extra) free((wstr)x[0]);
+	for (auto x : strs_allocated) free((char *)x);
 }
-

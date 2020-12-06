@@ -153,6 +153,23 @@ the same rule). However this is only a performance advice. TML should work
 correctly either way, where variables (implicitly) range over the whole
 universe.
 
+## Fact deletion
+
+It is also possible to use negated facts. These are deleted right after
+non-negated facts are added and right before rules are being executed.
+
+    a(2). b(?x).
+    ~b(1). ~a(?x).
+    a_copy(?x) :- a(?x).
+    b_copy(?x) :- b(?x).
+
+will result with
+
+    b(2).
+    b(0).
+    b_copy(2).
+    b_copy(0).
+
 ## Sequencing
 
 It is possible to sequence programs one after the other using curly brackets.
@@ -181,7 +198,10 @@ More generally, the output of one program is considered the input of the other.
 It is possible to filter the output before passing it to the next program as in
 the section "Queries".
 
-Nested programs are unsupported as they make no difference from flat sequences.
+# Nested programs
+
+It is possible to nest programs (actually whole sequences). Sequence of nested
+programs is run after the current (parent) program reaches its fixed point.
 
 # Trees
 
@@ -268,7 +288,7 @@ while if we had:
 the string `str` would be:
 
     "1245ab"
-    
+
 This relation `str` is then transferred to the next sequenced program, or
 emitted as the output of the program if no sequenced program is present.
 
@@ -372,10 +392,374 @@ by the productions
     ws1 => space ws1.
     ws1 => null.
 
+# Macro feature.
+
+TML allows using macro that can be expanded internally. To define macro,  := is used.
+For example, atc macro is  defined as:
+
+    e(1 2).
+    e(2 3).
+    e(3 4).
+    atc(?a ?b ?c) := e(?a ?b), e(?b ?c).
+    tc(?x ?y ?z) :- atc(?x ?y ?z).
+
+This will expand to tc to
+
+    tc(?x ?y ?z) :- e(?x ?y), e(?y ?z)
+
+The variables in the body of the macro are replaced with that at the point of call, and then the body is expanded.
+
+Another variation is where the variables are partially specified in the macro term, that itself is an argument.
+
+    atc(?a ?b ) :=  e(?a ?b).
+    ttc(?x ?y) :- ntc(atc(?x)).
+    ntc(?a ).
+ 
+This will expand macro atc as
+
+    ttc(?x ?y) :- 
+            ntc(?0f10),
+            e(?x ?0f10).
+
+Here a new fresh variable ?0f10 is introduced.
+
+# EBNF support
+
+TML grammar can take EBNF syntax as well. It supports { } for zero or more occurrence, [ ] for optional, and ( ) for grouping terms. Further  * and +  are postfix operators that can be applied.
+
+    @string str "aabbccdd".
+    A => ('a')*. 
+    B => 'b'+.
+    C => 'c'*.
+    D => 'd''d'
+    S => A B C D
+
+Here 'a' can occur zero or more times and 'b' can occur one or more time. Internally, TML shall replace it with fresh production symbols that would do recursion. A more complex example is
+
+    A => { [ 'a' { [ 'a' ] } [ 'f' ] ] } .
+    C => 'c' + .
+    B => 'b' [ B ] .          # B occurs one or zero time.
+    D => ( 'd' 'd' ) * .      # ( ) allows * operator to be applied to all terms as a whole.
+    S => A * B + C * D + | A + ( B * ) .
+    K => ( C + ) * [ B + ] .
+
+# Grammar Constraints 
+
+TML allows adding constraints to a simple grammar production. 
+These constraints refer to the properties of symbols through their relative position 
+in the right hand side, starting from 1. Internally, TML translates them into terms. 
+There are two types of constraints supported .  
+- len(i) is the size of the string derived from symbol at position i. 
+- substr(i) is the substring content derived from a symbol at position i.
+
+Example 1:
+Consider the following grammar.
+
+    @string str "aabbcc".
+    A => 'a' A 'b' | "ab" .
+    C => 'c'C .
+    C => 'c' .
+    S => A C ,  len(2) + len(2) = len(1) .
+
+Here the constraints are specified for S production where the length of the derived string from A should be twice the length derived from C. 
+Note that due to constraints it would not accept "abc".
+
+Example 2
+Another example using string comparison.
+
+    @string str "cccaccc".
+    C => 'c' C .
+    C => 'c' | 'z'.
+    A => 'a' A | 'a'.
+    S => C A C, substr(1) = substr(3), len(2) = 1.
+
+Here the derived content of both Cs should match.  
+
 # First Order Formulas
 
 It is possible to supply a first order formula which is then transformed into
-a TML program. TBD
+a TML program. The valid symbols are:
+ - quantifiers: forall, exists, unique.
+ - connectives: `&&`, `||`, `->`, `<->` and `~` for negation.
+ - punctuation: balanced `{` , `}` for matrix and sub-formula specification.
+ - variables and relationships.
+ - constraints: `+`, `<`, `=`.  
+
+Attaching a formula to the head of a rule will make true in case of satisfiability otherwise false.
+
+Example 1:
+
+    A(0).
+    A(1).
+    B(0).
+    ALL_B_IS_A(1) :- forall ?x { B(?x) -> A(?x) }.
+
+    will result with:
+    ALL_B_IS_A(1).
+
+Additionally, if variables are set on the head, besides checking satisfiability TML will evaluate the solution for such formula.
+
+Example 2:
+
+    A2(1 0).
+    A2(1 1).
+    B2(1 0).
+    B2(1 1).
+    B2(0 1).
+    AND_B2_A2(?x ?y) :- { B2(?x ?y) && A2(?y ?x) }.
+
+    will result with:
+    AND_B2_A2(1 1).
+    AND_B2_A2(0 1).
+
+Notice that variables in the head of the rule are existentially quantified, so above formula is equivalent to:  
+
+    ALL_B2_IS_A2(?y ?x) :- exists ?x exists ?y { B2(?x ?y) -> A2(?y ?x) }.
+
+TML first order logic also allows to set arithmetic constraints to the variables by a conjunction with an arithmetic expression as below.
+
+Example 3:
+
+    s0(0).
+    s1(1).
+    s2(2).
+    A(?x ?y) :- { s2(?x) && ?x + 1 = ?y } .
+    B(?v1 ?v3) :- exists ?v2 { A(?v2 ?v3) && s1(?v1) && ?v1 + 1 = ?v2 } .
+
+    will result with:
+    A(2 3).
+    B(1 3).
+
+
+# Finitary Arithmetic
+
+TML currently provide support for integer addition and multiplication. It also includes support for bitwise boolean operations (AND, OR, XOR, NOT) and shift operations (SHL, SHR). Additionally the arithmetic primitives are defined in two modes: (1) pre-computed and (2) ad-hoc, according to how they are computed.
+
+1. Pre-computed mode involves the generation of the relationship `?x op ?y = ?z` where `op` can be `+, *, &, |, ^, <<, >>`.
+The range for the arguments is `(0,MAX)` where `MAX` is equal to the maximum number in the program.
+Pre-computed stands for how TML is actually handling the unification of the arithmetic relationship with the values of the arguments; starting with a global relationship for any possible value in the universe it will get constrained depending on the arguments.
+
+Example 1:
+
+    U(4).
+    A(1).
+    A(3).
+    adder_0(?x ?y ?z) :- e(?x), e(?y), ?x + ?y = ?z.
+    adder_1(?x) :- e(?x), ?x + 1 = 3. # unsat
+    adder_2(?x) :- e(?x), ?x + 2 = 3.
+
+    output:
+    adder_0(3 1 4).
+    adder_0(1 3 4).
+    adder_0(1 1 2).
+    adder_2(1).
+
+This mode is the most expressive one, meaning that i.e. allows to solve equations like in rule setting `adder_C` in Example 1. It will be in general the most convenient one for programs involving any operation other than multiplication.
+On the other hand, when doing multiplication with numbers larger than 2^10, pre-computed mode shows a performance bottleneck due a exponential execution time dependence on the number of bits. For this reason, an additional mode for arithmetic support has been developed.
+
+
+2. Ad-hoc mode computes arithmetic operations with alternative strategy. TML will first evaluate the possible values for the input operands and then compute the set of results of the binary operation. It provides reduced capability compared to pre-computed mode, specifically it won't preserve the relationship between the operands but just evaluate the right hand side of the expression. On the other hand it allows  to handle multiplication of larger numbers.
+
+Example 2:
+
+    U(15).
+    A(?x) :- ?x = 5.
+    B(?x) :- ?x <= 2.
+    adhoc_mult(?z) :- A(?x), B(?y), pw_mult(?x ?y ?z).
+
+    will result with:
+    ad_hoc_mult(10).
+    ad_hoc_mult(5).
+    ad_hoc_mult(0).
+
+Table below summarizes current arithmetic operator support:
+
+| Operation | Contractive Mode | Expansive Mode |
+| --------- | ---------------- | -------------- |
+| addition | ?x + ?y = ?z | pw_add(?x ?y ?z) |
+| multiplication | ?x * ?y = ?z | pw_mult(?x ?y ?z) |
+| bitwise AND | ?x & ?y = ?z | bw_and(?x ?y ?z) |
+| bitwise OR | ?x  \| ?y = ?z | bw_or(?x ?y ?z) |
+| bitwise XOR | ?x ^ ?y = ?z | bw_xor(?x ?y ?z) |
+| bitwise NOT | TBD | bw_not(?x ?z) |
+| shift-left | ?x << const = ?z | - |
+| shift-right | ?x >> const = ?z | - |
+
+
+Finally, special attention deserves the precision of the arithmetic operations. By default they will operate modulo 2^n, where n is the number of bits required for MAX (maximum number in the program), this means that any overflow will be discarded.
+
+Example 3:
+
+    U(7).
+    mult_mod8(?x) :- ?x * 2  = 2.
+
+    will result with:
+    mult_mod8(1).
+    mult_mod8(5).
+
+Alternatively, if the user requires extended precision to keep all information on the right side of the equality (the ?z variable in the examples above), both addition and multiplication can be used as below:
+
+    U(15).
+    ext_prec(?zh ?zl) :- ?x = 6, ?y = 4, ?x * ?y = ?zh ?zl.
+
+    will result with:
+    ext_prec(1 8). #notice: 1*2^4 + 8 = 24
+
+where ?zh accounts for the most significant bits (MSBs) of the operation and ?zl for the least significant bits (LSBs).
+
+# Rule guards
+
+To enable or disable a rule we can use additional term in rule's body. Existence
+of such a term guards execution of the rule.
+
+    guard.                      # guard fact is required for execution of
+    a_copy(?x) :- a(?x), guard. # this rule
+
+Rule guards are used for implementing **if** and **while** statements.
+
+To properly guard execution of nested programs, it is required to transform
+fact adds and fact deletions into rules. Because these happen in a sequence we
+need to transform each nested program into several consecutive states:
+initialization (__init), start (__start), adds (__add), deletions (__del) and
+rules (__rule).
+
+There is also an additional and independent break (__break) state.
+If this state exists it prevents execution of all rules in the current program
+and thus forces a fixed point and ends its execution.
+
+Transformation of a TML program into states is enabled by using `-guards` (`-g`)
+command line option. With this option each nested program
+
+    { # with its unique id (let's say id of this nested prog is __1)
+        fact1, fact2.
+        ~fact2.
+        rule1 :- fact1.
+    }
+
+becomes
+
+    {
+        __init (__1).
+        __start(__1), ~__init (__1) :-        __init (__1), ~__break(__1). # *
+        __add  (__1), ~__start(__1) :-        __start(__1), ~__break(__1).
+        __del  (__1), ~__add  (__1) :-        __add  (__1), ~__break(__1).
+        __rule (__1), ~__del  (__1) :-        __del  (__1), ~__break(__1).
+
+         fact1, fact2               :-        __add  (__1), ~__break(__1).
+        ~fact2                      :-        __del  (__1), ~__break(__1).
+         rule1                      :- fact1, __rule (__1), ~__break(__1).
+    }
+
+An internal program is run after the program finishes. This program removes all
+the guards from the database. If you want to skip this phase and keep the guards
+use command line option `-keep-guards` (`-kg`). It can be  useful for debugging
+since it keeps last state guard of each nested program plus results of guarding
+statements.
+
+To see transformed program use `-t` comand line option.
+
+# Guarding statements
+
+Guard transformation enables usage of **if** and **while** statements.
+First order form is used as a condition. Guarded code is always nested
+eventhough it does not have to be surrounded by '{' and '}' if it is just
+a single rule or another guarding statement.
+
+## if then (else)
+
+Syntax of **if** statement is:
+
+    if FORM then STATEMENT.                   # or
+    if FORM then STATEMENT else STATEMENT.
+
+FORM is a first order form and STATEMENT can be another guarding statement,
+a nested program or a rule (note that STATEMENT is always nested. It is parsed
+as a nested program, ie. `rule.` is parsed as `{ rule. }`).
+
+Example
+
+    A(10).
+    if exists ?x { A(?x) } then A_not_empty. else { A_empty. }
+
+is equivalent to
+
+    A(10).
+    if exists ?x { A(?x) } then { A_not_empty. } else A_empty.
+
+produces
+
+    A(10).
+    A_not_empty.
+
+**if** is implemented by transformation of a condition (FO formula) into a rule
+which adds a guard which then enables execution of the true (if then ...) or
+false (else ...) nested program.
+
+For above example such a rule would be (if id of the guard statement is __0)
+
+    __guard(__0) :- exists ?x { A(?x) }.
+
+Each respective (true/false) nested program block gets added a new rule which
+is run in the __init state. Additionally, head of this rule is added into the
+rule which transitions from the __init to the __start state (marked above in
+Rule guards transformation example by # *)
+
+    { # true nested program block with id __1
+        __true (__0) :- __guard(__0), __init(__1).
+        __init (__1).
+        __start(__1),  ~__init (__1) :-
+		__init(__1), ~__break(__1), __true(__0).
+        #...
+    }
+    { # false nested program block with id __2
+        __false(__0) :- ~__guard(__0), __init(__2).
+        __init (__2).
+        __start(__2),   ~__init (__2) :-
+		__init(__2), ~__break(__2), __false(__0).
+        #...
+    }
+
+## while do
+
+Syntax of **while** statement:
+
+    while FORM do STATEMENT.
+
+FORM is a first order form and STATEMENT can be another guarding statement,
+a nested program or a rule.
+
+Example
+
+    a(0). a(1). a(2). a(3). a(4).
+    i(0).
+    while ~ { b(1) } do {
+        b(?x), i(?x1), ~a(?x), ~i(?x) :-
+                        a(?x),  i(?x), ?x + 1 = ?x1.
+    }
+
+outputs following
+
+    a(4).
+    a(3).
+    i(3).
+    b(2).
+    b(1).
+    b(0).
+
+Note that while the guard creating rule for the **if** statement is executed in
+the parent program and is not checked anymore when it runs the nested true/false
+programs, guard rule for the **while** statement is executed each step of the
+nested program. Anytime such a rule becomes true it creates a __break state
+which disables all rules in the current program reaching the fixed point and
+continuing with execution to nested sequence of programs and then to next
+program in the current sequence.
+
+Also note that for breaking rule we need to negate the formula.
+
+Example of a breaking rule which is added into the **while**'s nested program:
+
+    __break(__0) :- ~ { ~ { b(1) } }.
+
 
 # Misc
 
@@ -389,7 +773,6 @@ TBD
 # Future Work
 
 * Support !=, <, >, min, max.
-* Support finitary arithmetic.
 * Backward chaining and focused goal resolution.
 * More grammar and string builtins.
 * BDD level garbage collection.

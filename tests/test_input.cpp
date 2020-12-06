@@ -7,14 +7,17 @@
 
 TEST_SUITE("input processing test") {
     TEST_CASE("tokenizing input string") {
-        cws emptyString = L"                                   ";
-        lexemes emptyArray = prog_lex(emptyString);
-        CHECK(emptyArray.size() == 0);
-        cws stringWithComment = L" /*  ";
-        DOCTEST_CHECK_THROWS(prog_lex(stringWithComment));
-        cws s = L"setB(?x ?y ?z) :- e(?x), e(?y), ?x + ?y = ?z. ?x > ?y.";
-        lexemes r = prog_lex(s);
-        CHECK(r.size() == 27);
+        string_t emptyString = to_string_t("                                   ");
+        input in1(emptyString.c_str());
+        CHECK(in1.l.size() == 0);
+        string_t stringWithComment = to_string_t(" /*  ");
+	input in2(stringWithComment.c_str());
+	CHECK((in2.prog_lex(), in2.error == true));
+        string_t s = to_string_t(
+		"setB(?x ?y ?z) :- e(?x), e(?y), ?x + ?y = ?z. ?x > ?y.");
+	input in3(s.c_str());
+	in3.prog_lex();
+        CHECK(in3.l.size() == 27);
     }
 }
 

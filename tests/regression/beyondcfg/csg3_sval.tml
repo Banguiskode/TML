@@ -1,0 +1,8 @@
+@string str "aabbaabbcc".
+A => 'a' A 'b' | "ab" .
+B => A.
+C => 'c' C.
+C => 'c'.
+S => A B C.
+				
+!S(0 10).

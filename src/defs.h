@@ -21,39 +21,36 @@
 #include <iomanip>
 #include <cstdio>
 #include <map>
+#include <memory>
 
 #ifndef __EMSCRIPTEN__
+#ifdef __unix__
 #include <execinfo.h>
+#endif
 #endif
 
 typedef int32_t int_t;
 typedef uint32_t uint_t;
 typedef std::vector<uint_t> uints;
-
-typedef wchar_t* wstr;
-typedef const wchar_t* cws;
-typedef cws* pcws;
-typedef std::array<cws, 2> cws_range;
-typedef cws_range lexeme;
-typedef std::vector<lexeme> lexemes;
 typedef std::vector<int_t> ints;
-struct lexcmp { bool operator()(const lexeme& x, const lexeme& y) const; };
-typedef std::map<lexeme, std::wstring, lexcmp> strs_t;
 typedef std::vector<bool> bools;
 typedef std::vector<bools> vbools;
 typedef int_t ntable;
 typedef size_t nlevel;
 //typedef std::vector<size_t> sizes;
 
+#include "char_defs.h"
+
 //#define DEEPDEBUG
 #ifdef DEBUG
 #define DBG(x) x
 #define NDBG(x)
+#define DBGFAIL assert(0)
 #else
 #define DBG(x)
 #define NDBG(x) x
+#define DBGFAIL
 #endif
-#define er(x) o::err() << x << endl, throw std::runtime_error(ws2s(x))
 #define msb(x) ((sizeof(unsigned long long)<<3) - \
 	__builtin_clzll((unsigned long long)(x)))
 #define has(x, y) ((x).find(y) != (x).end())
@@ -63,30 +60,34 @@ typedef size_t nlevel;
 #define measure_time_end() end = clock(), \
 		o::ms() << std::fixed << std::setprecision(2) << \
 		(double(end - start) / CLOCKS_PER_SEC) * 1000 \
-		<< L" ms" << endl
+		<< " ms" << endl
 #define measure_time(x) measure_time_start(); x; measure_time_end()
-#define elem_openp elem(elem::OPENP, get_lexeme(L"("))
-#define elem_closep elem(elem::CLOSEP, get_lexeme(L")"))
+#define elem_openp elem(elem::OPENP, get_lexeme("("))
+#define elem_closep elem(elem::CLOSEP, get_lexeme(")"))
 #define htrue bdd_handle::T
 #define hfalse bdd_handle::F
 template<typename T> T sort(const T& x){T t=x;return sort(t.begin(),t.end()),t;}
-void parse_error(std::wstring e, lexeme l);
-std::wstring s2ws(const std::string&);
-std::string  ws2s(const std::wstring&);
 
-namespace o { // call driver::init() before using any o::xxx() wostream
-	std::wostream& out(); // for program output (in tml facts)
-	std::wostream& err(); // for errors
-	std::wostream& inf(); // for info (for debugging in Release)
-	std::wostream& dbg(); // for debugging (point to null if not Debug)
-	std::wostream& repl();// for REPL
-	std::wostream& ms();  // benchmarks output for time measurings
-	std::wostream& dump();// for dumping of database or goals/proofs
-}
+#ifdef _WIN32
+std::string temp_filename();
+#else
+int temp_fileno();
+std::string filename(int fd);
+#endif
 
 typedef enum  {
 	NOP, ADD, SUB, MULT, BITWAND, BITWOR, BITWXOR, BITWNOT, SHR, SHL
 } t_arith_op;
 
-#endif
+struct alt;
+struct form;
+struct body;
+struct pnf_t;
+typedef enum {EX, UN, FA, EXH, UNH, FAH} quant_t;
+typedef std::map<int_t, size_t> varmap;
+typedef std::shared_ptr<class bdd_handle> spbdd_handle;
+typedef std::shared_ptr<form> spform_handle;
+typedef const spform_handle& cr_spform_handle;
+
 //#define TRANSFORM_BIN_DRIVER
+#endif
