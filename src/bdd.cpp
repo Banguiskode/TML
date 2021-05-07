@@ -37,7 +37,7 @@ template<typename T1, typename T2> struct vec2cmp {
 };
 
 vector<unordered_map<bdd_key, int_t>> Mp, Mn;
-unique_ptr<bdd_mmap> V;
+bdd_mmap V;
 size_t max_bdd_nodes = 0;
 mmap_mode bdd_mmap_mode = MMAP_NONE;
 string bdd_mmap_file = "";
@@ -70,23 +70,23 @@ const size_t gclimit = 1e+6;
 void bdd::init(mmap_mode m, size_t max_size, const string fn) {
 	bdd_mmap_mode = m;
 	if ((max_bdd_nodes = max_size / sizeof(bdd)) < 2) max_bdd_nodes = 2;
-	V = make_unique<bdd_mmap>(memory_map_allocator<bdd>(fn, m));
-	if (m != MMAP_NONE) V->reserve(max_bdd_nodes);
+	V = bdd_mmap(memory_map_allocator<bdd>(fn, m));
+	if (m != MMAP_NONE) V.reserve(max_bdd_nodes);
 	//DBG(o::dbg() << "bdd::init(m: MMAP_" <<
 	//	(m == MMAP_NONE ? "NONE" : "WRITE") <<
 	//	", max_size: " << max_size << ", fn: " << fn
 	//	<< ") max_bdd_nodes=" << max_bdd_nodes << "\n";)
-	S.insert(0), S.insert(1), V->emplace_back(0, 0, 0), // dummy
-	V->emplace_back(0, 1, 1), Mp.resize(1),
+	S.insert(0), S.insert(1), V.emplace_back(0, 0, 0), // dummy
+	V.emplace_back(0, 1, 1), Mp.resize(1),
 	Mp[0].emplace(bdd_key(hash_pair(0, 0), 0, 0), 0),
 	Mp[0].emplace(bdd_key(hash_pair(1, 1), 1, 1), 1),
 	htrue = bdd_handle::get(T), hfalse = bdd_handle::get(F);
 }
 
 void bdd::max_bdd_size_check() {
-	//DBG(o::dbg() << "add_check V->size()-1=" << V->size()-1
+	//DBG(o::dbg() << "add_check V.size()-1=" << V.size()-1
 	//	<< " max_bdd_nodes=" << max_bdd_nodes << endl;)
-	if (V->size() == max_bdd_nodes)
+	if (V.size() == max_bdd_nodes)
 		CERR << "Maximum bdd size reached. Increase the limit"
 		" with --bdd-max-size parameter. Exitting." << endl,
 		onexit = true,
@@ -96,27 +96,29 @@ void bdd::max_bdd_size_check() {
 
 int_t bdd::add(int_t v, int_t h, int_t l) {
 	DBG(assert(h && l && v > 0););
-	DBG(assert(leaf(h) || v < abs((*V)[abs(h)].v)););
-	DBG(assert(leaf(l) || v < abs((*V)[abs(l)].v)););
+	DBG(assert(leaf(h) || v < abs(V[abs(h)].v)););
+	DBG(assert(leaf(l) || v < abs(V[abs(l)].v)););
 	if (h == l) return h;
 	if (abs(h) < abs(l)) swap(h, l), v = -v;
-	static unordered_map<bdd_key, int_t>::const_iterator it;
-	static bdd_key k;
+	unordered_map<bdd_key, int_t>::const_iterator it;
+	bdd_key k;
 	auto &mm = v < 0 ? Mn : Mp;
 	if (mm.size() <= (size_t)abs(v)) mm.resize(abs(v)+1);
 	auto &m = mm[abs(v)];
 	if (l < 0) {
-		k = bdd_key(hash_pair(-h, -l), -h, -l);
+		h = -h;
+		l = -l;
+		k = bdd_key(hash_pair(h, l), h, l);
 		return	(it = m.find(k)) != m.end() ? -it->second :
-			(V->emplace_back(v, -h, -l),
-			m.emplace(move(k), V->size()-1),
-			-V->size()+1);
+			(V.emplace_back(v, h, l),
+			m.emplace(move(k), V.size()-1),
+			-V.size()+1);
 	}
 	k = bdd_key(hash_pair(h, l), h, l);
 	return	(it = m.find(k)) != m.end() ? it->second :
-		(V->emplace_back(v, h, l),
-		m.emplace(move(k), V->size()-1),
-		V->size()-1);
+		(V.emplace_back(v, h, l),
+		m.emplace(move(k), V.size()-1),
+		V.size()-1);
 }
 
 int_t bdd::from_bit(uint_t b, bool v) {
@@ -140,26 +142,21 @@ int_t bdd::bdd_and(int_t x, int_t y) {
 	if (x == T || x == y) return y;
 	if (y == T) return x;
 	if (x > y) swap(x, y);
-#ifdef MEMO
-	if (C.size() >= gclimit) {
-		const bdd bx = get(x), by = get(y);
-		if (bx.v < by.v)
-			return add(bx.v, bdd_and(bx.h, y), bdd_and(bx.l, y));
-		else if (bx.v > by.v)
-			return add(by.v, bdd_and(x, by.h), bdd_and(x, by.l));
-		return add(bx.v, bdd_and(bx.h, by.h), bdd_and(bx.l, by.l));
-	}
-	ite_memo m = { x, y, F };
-	auto it = C.find(m);
-	if (it != C.end()) return it->second;
-#endif
 	const bdd bx = get(x), by = get(y);
-	int_t r;
-	if (bx.v < by.v) r = add(bx.v, bdd_and(bx.h, y), bdd_and(bx.l, y));
-	else if (bx.v > by.v) r = add(by.v, bdd_and(x, by.h), bdd_and(x, by.l));
-	else r = add(bx.v, bdd_and(bx.h, by.h), bdd_and(bx.l, by.l));
+	ite_memo m = { x, y, F };
+	bool leaf = 
+		bx.h == T || bx.h == F || bx.l == T || bx.l == F ||
+		by.h == T || by.h == F || by.l == T || by.l == F;
 #ifdef MEMO
-	C.emplace(m, r);
+	if (!leaf && bx.v == by.v)
+		if (auto it = C.find(m); it != C.end())
+			return it->second;
+#endif
+	if (bx.v < by.v) return add(bx.v, bdd_and(bx.h, y), bdd_and(bx.l, y));
+	if (bx.v > by.v) return add(by.v, bdd_and(x, by.h), bdd_and(x, by.l));
+	int_t r = add(bx.v, bdd_and(bx.h, by.h), bdd_and(bx.l, by.l));
+#ifdef MEMO
+	if (!leaf && C.size() < gclimit) C.emplace(m, r);
 #endif
 	return r;
 }
@@ -575,39 +572,38 @@ int_t bdd::bdd_and_many_ex_perm(bdds v, const bools& ex, const uints& p) {
 }
 
 void bdd::mark_all(int_t i) {
-	DBG(assert((size_t)abs(i) < V->size());)
+	DBG(assert((size_t)abs(i) < V.size());)
 	if ((i = abs(i)) >= 2 && !has(S, i))
 		mark_all(hi(i)), mark_all(lo(i)), S.insert(i);
 }
 
 template <typename T>
 basic_ostream<T>& bdd::stats(basic_ostream<T>& os) {
-	return os << "S: " << S.size() << " V: "<< V->size() <<
+	return os << "S: " << S.size() << " V: "<< V.size() <<
 		" AM: " << AM.size() << " C: "<< C.size();
 }
 template basic_ostream<char>& bdd::stats(basic_ostream<char>&);
 template basic_ostream<wchar_t>& bdd::stats(basic_ostream<wchar_t>&);
 
 void bdd::gc() {
-	if (!V) return;
+	if (V.empty()) return;
 	S.clear();
 	for (auto x : bdd_handle::M) mark_all(x.first);
-//	if (V->size() < S.size() << 3) return;
+//	if (V.size() < S.size() << 3) return;
 	const size_t pvars = Mp.size(), nvars = Mn.size();
 	Mp.clear(), Mn.clear(), S.insert(0), S.insert(1);
 //	if (S.size() >= 1e+6) { o::err() << "out of memory" << endl; exit(1); }
-	vector<int_t> p(V->size(), 0);
-	unique_ptr<bdd_mmap> v1 = make_unique<bdd_mmap>(
-		memory_map_allocator<bdd>("", bdd_mmap_mode));
-	v1->reserve(bdd_mmap_mode == MMAP_NONE ? S.size() : max_bdd_nodes);
-	for (size_t n = 0; n < V->size(); ++n)
-		if (has(S, n)) p[n] = v1->size(), v1->emplace_back(move((*V)[n]));
+	vector<int_t> p(V.size(), 0);
+	bdd_mmap v1(memory_map_allocator<bdd>("", bdd_mmap_mode));
+	v1.reserve(bdd_mmap_mode == MMAP_NONE ? S.size() : max_bdd_nodes);
+	for (size_t n = 0; n < V.size(); ++n)
+		if (has(S, n)) p[n] = v1.size(), v1.emplace_back(move(V[n]));
 	stats(o::dbg())<<endl;
 	V = move(v1);
 #define f(i) (i = (i >= 0 ? p[i] ? p[i] : i : p[-i] ? -p[-i] : i))
-	for (size_t n = 2; n < V->size(); ++n) {
-		DBG(assert(p[abs((*V)[n].h)] && p[abs((*V)[n].l)] && (*V)[n].v);)
-		f((*V)[n].h), f((*V)[n].l);
+	for (size_t n = 2; n < V.size(); ++n) {
+		DBG(assert(p[abs(V[n].h)] && p[abs(V[n].l)] && V[n].v);)
+		f(V[n].h), f(V[n].l);
 	}
 	unordered_map<ite_memo, int_t> c;
 	unordered_map<bdds, int_t> am;
@@ -706,12 +702,12 @@ void bdd::gc() {
 	}
 	AM=move(am), bdd_handle::update(p), Mp.resize(pvars), Mn.resize(nvars);
 	p.clear(), S.clear();
-	for (size_t n = 0; n < V->size(); ++n)
-		if ((*V)[n].v < 0)
-			Mn[-(*V)[n].v].emplace(bdd_key(hash_pair((*V)[n].h, (*V)[n].l),
-				(*V)[n].h, (*V)[n].l), n);
-		else Mp[(*V)[n].v].emplace(bdd_key(hash_pair((*V)[n].h, (*V)[n].l),
-				(*V)[n].h, (*V)[n].l), n);
+	for (size_t n = 0; n < V.size(); ++n)
+		if (V[n].v < 0)
+			Mn[-V[n].v].emplace(bdd_key(hash_pair(V[n].h, V[n].l),
+				V[n].h, V[n].l), n);
+		else Mp[V[n].v].emplace(bdd_key(hash_pair(V[n].h, V[n].l),
+				V[n].h, V[n].l), n);
 	o::dbg() <<"AM: " << AM.size() << " C: "<< C.size() << endl;
 }
 
@@ -726,7 +722,7 @@ void bdd_handle::update(const vector<int_t>& p) {
 #undef f
 
 spbdd_handle bdd_handle::get(int_t b) {
-	DBG(assert((size_t)abs(b) < V->size());)
+	DBG(assert((size_t)abs(b) < V.size());)
 	auto it = M.find(b);
 	if (it != M.end()) return it->second.lock();
 	spbdd_handle h(new bdd_handle(b));
@@ -769,7 +765,7 @@ spbdd_handle bdd_ite_var(uint_t x, cr_spbdd_handle y, cr_spbdd_handle z) {
 }
 
 spbdd_handle bdd_and_many(bdd_handles v) {
-	if (V->size() >= gclimit) bdd::gc();
+	if (V.size() >= gclimit) bdd::gc();
 /*	if (v.size() > 16) {
 		bdd_handles x, y;
 		spbdd_handle r;
@@ -790,7 +786,7 @@ spbdd_handle bdd_and_many(bdd_handles v) {
 }
 
 spbdd_handle bdd_and_many_ex(bdd_handles v, const bools& ex) {
-	if (V->size() >= gclimit) bdd::gc();
+	if (V.size() >= gclimit) bdd::gc();
 	bool t = false;
 	for (bool x : ex) t |= x;
 	if (!t) return bdd_and_many(move(v));
@@ -804,7 +800,7 @@ spbdd_handle bdd_and_many_ex(bdd_handles v, const bools& ex) {
 
 spbdd_handle bdd_and_many_ex_perm(bdd_handles v, const bools& ex,
 	const uints& p) {
-	if (V->size() >= gclimit) bdd::gc();
+	if (V.size() >= gclimit) bdd::gc();
 //	DBG(assert(bdd_nvars(v) < ex.size());)
 //	DBG(assert(bdd_nvars(v) < p.size());)
 	bdds b;
@@ -1146,7 +1142,7 @@ size_t hash<bdds>::operator()(const bdds& b) const {
 }
 
 bdd::bdd(int_t v, int_t h, int_t l) : h(h), l(l), v(v) {
-//	DBG(assert(V->size() < 2 || (v && h && l));)
+//	DBG(assert(V.size() < 2 || (v && h && l));)
 }
 
 template <typename T>

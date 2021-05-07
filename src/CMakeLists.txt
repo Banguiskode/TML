@@ -18,7 +18,9 @@ include(tml-common)
 set(TML_HEADERS
 	TML.h
 	archive.h
+	analysis.h
 	bdd.h
+	builtins.h
 	char_defs.h
 	defs.h
 	dict.h
@@ -34,8 +36,10 @@ set(TML_HEADERS
 
 set(TML_SOURCES
 	archive.cpp
+	analysis.cpp
 	bdd.cpp
 	bdd_ext.cpp
+	builtins.cpp
 	dict.cpp
 	driver.cpp
 	form.cpp
@@ -47,6 +51,7 @@ set(TML_SOURCES
 	proof.cpp
 	save_csv.cpp
 	tables.cpp
+	tables_builtins.cpp
 	tables_ext.cpp
 	transform.cpp
 	transform_guards.cpp

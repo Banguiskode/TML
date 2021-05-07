@@ -105,8 +105,8 @@ bool outputs::add(sp_output out) {
 	string n = out->name();
 	auto it = find(n);
 	if (it != end()) {
-		CERR << "already exists: " << n << " target: "
-			<< out->target() << endl;
+		//CERR << "already exists: " << n << " target: "
+		//	<< out->target() << endl;
 		it->second->target(out->target());
 		out = it->second;
 	} else emplace(n, out);
@@ -189,8 +189,8 @@ template basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const vbool
 
 template <typename T>
 basic_ostream<T>& operator<<(basic_ostream<T>& os, const term& t) {
-	os << t.tab << ' ';
-	if (t.neg) os << '~';
+	os << '[' << t.tab << "] ";
+	if (t.neg) os << "~ ";
 	for (size_t n = 0; n != t.size(); ++n) {
 		os << t[n];
 		if (n != t.size()-1) os << ' ';
@@ -306,6 +306,18 @@ basic_ostream<T>& operator<<(basic_ostream<T>& os, const directive& d) {
 	os << '@';
 	if (d.type == directive::BWD) return os << "bwd.";
 	if (d.type == directive::TRACE) return os << "trace." << endl;
+	if (d.type == directive::EDOMAIN)
+		return os << "domain " << d.domain_sym << ' ' << d.limit_num << ' '
+			<< d.arity_num << '.';
+	if (d.type == directive::EVAL)
+		return os << "eval " << d.eval_sym << ' ' << d.domain_sym << ' '
+			<< d.quote_sym << ' ' << d.timeout_num << '.';
+	if (d.type == directive::QUOTE)
+		return os << "quote " << d.quote_sym << ' ' << d.domain_sym << ' '
+			<< d.quote_str << '.';
+	if (d.type == directive::CODEC)
+		return os << "codec " << d.codec_sym << ' ' << d.domain_sym << ' '
+			<< d.quote_sym << ' ' << d.arity_num << '.';
 	if (d.type == directive::STDOUT) os << "stdout ";
 	else os << "string ";
 	if (d.type == directive::TREE) return os << d.t << '.';
@@ -324,7 +336,12 @@ basic_ostream<T>& operator<<(basic_ostream<T>& os, const elem& e) {
 			to_string(to_string_t(e.ch)) << '\'';
 		case elem::OPENP:
 		case elem::CLOSEP: return os << *e.e[0];
-		case elem::NUM: return os << e.num;
+		case elem::NUM:    return os << e.num;
+		case elem::BLTIN: if (e.num) {
+				if (e.num & 2) os << "renew ";
+				if (e.num & 1) os << "forget ";
+			}
+			return os << e.e;
 		default: return os << e.e;
 	}
 }
@@ -368,11 +385,61 @@ std::string quote_sym(const elem& e) {
 		os << to_string(ss.str());
 		if (q) os.put('"');
 		else if (e.e[0] == e.e[1]) os << "\"\"";
-	} else {
-		os << e; // CHR, OPENP, CLOSEP or NUM = no quotes
-	}
+	} else if (e.type == elem::CHR) switch (e.ch) {
+		case U'\r': os <<  "'\\r'"; break;
+		case U'\n': os <<  "'\\n'"; break;
+		case U'\t': os <<  "'\\t'"; break;
+		case U'\\': os << "'\\\\'"; break;
+		case U'\'': os <<  "'\\''"; break;
+		default: if (is_printable(e.ch)) os << e;
+			else os << "'\\" << (e.ch < 256?'x':'u') << hex
+				<< setfill('0') << setw(e.ch<256?2:4)
+				<< (unsigned int) e.ch << "'";
+	} else os << e; // OPENP, CLOSEP or NUM = no quotes
 	return ws2s(os.str());
 }
+
+template <typename T>
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_form_tree &t) {
+	switch(t.type) {
+		case elem::IMPLIES:
+			os << "{" << *t.l << " -> " << *t.r << "}";
+			break;
+		case elem::COIMPLIES:
+			os << "{" << *t.l << " <-> " << *t.r << "}";
+			break;
+		case elem::AND:
+			os << "{" << *t.l << " && " << *t.r << "}";
+			break;
+		case elem::ALT:
+			os << "{" << *t.l << " || " << *t.r << "}";
+			break;
+		case elem::NOT:
+			os << "~{" << *t.l << "}";
+			break;
+		case elem::EXISTS:
+			os << "exists " << *t.l << " { " << *t.r << " }";
+			break;
+		case elem::UNIQUE:
+			os << "unique " << *t.l << " { " << *t.r << " }";
+			break;
+		case elem::NONE:
+			os << *t.rt;
+			break;
+		case elem::FORALL:
+			os << "forall " << *t.l << " { " << *t.r << " }";
+			break;
+		case elem::SYM: case elem::VAR:
+			os << *t.el;
+			break;
+		default:
+			assert(false); //should never reach here
+	}
+	return os;
+}
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const raw_form_tree &);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const raw_form_tree &);
 
 template <typename T>
 basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_term& t) {
@@ -406,31 +473,41 @@ template
 basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const raw_term&);
 
 template <typename T>
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const pair<elem, bool>& p) {
+	const elem& e  = p.first;
+	return p.second && e.type == elem::CHR
+		? os << to_string(to_string_t(e.ch))
+		: os << e;
+}
+template basic_ostream<char>& operator<<(basic_ostream<char>& os,
+	const pair<elem, bool>&);
+template basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>& os,
+	const pair<elem, bool>&);
+
+template <typename T>
 basic_ostream<T>& operator<<(basic_ostream<T>& os,
-	const pair<raw_term, string>& p)
+	// raw_term, delimiter, skip n args
+	const tuple<raw_term, string, int_t>& p)
 {
-	const raw_term& t = p.first;
-	//if (t.neg) os << '~';
-	//os << t.e[0];
-	//os << '(';
+	const raw_term& t   = get<0>(p);
+	const string& delim = get<1>(p);
+	const int_t& skip   = get<2>(p);
 	for (size_t ar = 0, n = 1; ar != t.arity.size();) {
 		while (t.arity[ar] == -1) ++ar, os << '(';
 		if (n >= t.e.size()) break;
 		while (t.e[n].type == elem::OPENP) ++n;
-		for (int_t k = 0; k != t.arity[ar];)
-			if ((os << quote_sym(t.e[n++])), ++k != t.arity[ar])
-				os << ' ';
+		n += skip;
+		for (int_t k = skip; k != t.arity[ar];) {
+			if (n > 1) os << pair{ t.e[n++], true };
+			if (++k != t.arity[ar] && n > 1 && delim.length())
+				os << delim;
+		}
 		while (n < t.e.size() && t.e[n].type == elem::CLOSEP) ++n;
 		++ar;
 		while (ar < t.arity.size() && t.arity[ar] == -2) ++ar, os << ')';
 	}
-	return os; // << ')';
+	return os;
 }
-template basic_ostream<char>& operator<<(basic_ostream<char>&,
-	const pair<raw_term, string>&);
-template basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&,
-	const pair<raw_term, string>&);
-
 template <typename T>
 basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_rule& r) {
 	return print_raw_rule(os, r, 0);
@@ -438,6 +515,37 @@ basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_rule& r) {
 template basic_ostream<char>& operator<<(basic_ostream<char>&, const raw_rule&);
 template
 basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const raw_rule&);
+
+template <typename T>
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const std::set<raw_term>& rts) {
+	os << '{';
+	for(std::set<raw_term>::iterator it = rts.begin(); it != rts.end();
+			it++) {
+		if(it != rts.begin()) {
+			os << ", ";
+		}
+		os << *it;
+	}
+	return os << '}';
+}
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const std::set<raw_term>&);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const std::set<raw_term>&);
+
+template <typename T>
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const std::vector<raw_term>& rts) {
+	os << '[';
+	for(size_t i = 0; i < rts.size(); i++) {
+		if(i != 0) {
+			os << ", ";
+		}
+		os << rts[i];
+	}
+	return os << ']';
+}
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const std::vector<raw_term>&);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const std::vector<raw_term>&);
 
 template <typename T>
 basic_ostream<T>& print_raw_rule(basic_ostream<T>& os, const raw_rule& r,
@@ -458,7 +566,7 @@ basic_ostream<T>& print_raw_rule(basic_ostream<T>& os, const raw_rule& r,
 	bool uni = r.b.size() == 1 && r.b[0].size() == 1;
 	bool noendl = !r.b.size() || uni;
 	if (!compact && !noendl) os << endl;
-	if (r.prft.get()) os << r.prft.get();
+	if (r.prft.get()) os << *r.prft;
 	for (size_t n = 0; n < r.b.size(); ++n) {
 		for (size_t k = 0; k < r.b[n].size(); ++k)
 			if (((compact||uni?os<<"":os<<indent<<'\t')<<r.b[n][k]),
@@ -475,20 +583,28 @@ template basic_ostream<wchar_t>& print_raw_rule(basic_ostream<wchar_t>&,
 
 // TODO this is just a draft printer for raw form tree - not completly correct
 template <typename T>
-basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_form_tree* prft) {
-	function<basic_ostream<T>&(const raw_form_tree*)>print_node;
-	print_node = [&os, &print_node] (const raw_form_tree* prft)
-		-> basic_ostream<T>&
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const sprawformtree prft) {
+	lexeme guard_lx = prft->guard_lx;
+	auto is_quantifier = [](const sprawformtree prft) -> bool {
+		return prft->type == elem::EXISTS ||
+			prft->type == elem::FORALL ||
+			prft->type == elem::UNIQUE;
+	};
+	const sprawformtree node = prft;
+	//if (guard_lx != lexeme{ 0, 0 }) // find first node after quantifiers
+	//	while (node && is_quantifier(node)) node = node->r;
+	function<basic_ostream<T>&(const sprawformtree)> print_node;
+	print_node = [&os, &print_node, &guard_lx, &node, &is_quantifier]
+		(const sprawformtree prft) -> basic_ostream<T>&
 	{
 		basic_ostringstream<T> op;
 		bool wrap = prft->type != elem::VAR &&
 			prft->type != elem::SYM &&
 			prft->type != elem::NOT;
-		bool prefop = prft->el && (
-			prft->el->type == elem::FORALL ||
-			prft->el->type == elem::EXISTS ||
-			prft->el->type == elem::UNIQUE);
+		bool prefop = prft->el && is_quantifier(prft);
 		bool prefix = (prft->rt || prefop);
+		bool is_guarded = prft == node && guard_lx != lexeme{ 0, 0 };
+		if (is_guarded) os<<"{ "<<guard_lx<<" && ";
 		if (prft->neg) os << "~ ";
 		if (prft->type == elem::NOT) os << "~ ";
 		else prft->rt ? op << *prft->rt
@@ -499,14 +615,15 @@ basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_form_tree* prft) {
 		if (!prefix) os << " " << op.str();
 		if (prft->r) print_node(prft->r);
 		os << (wrap ? " }": " ");
+		if (is_guarded) os << " }";
 		return os;
 	};
 	return print_node(prft);
 }
 template basic_ostream<char>& operator<<(basic_ostream<char>&,
-	const raw_form_tree* prft);
+	const sprawformtree prft);
 template basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&,
-	const raw_form_tree* prft);
+	const sprawformtree prft);
 
 template <typename T>
 basic_ostream<T>& operator<<(basic_ostream<T>& os, const raw_prog& p) {
@@ -655,17 +772,64 @@ template <typename T>
 basic_ostream<T>& tables::print(basic_ostream<T>& os, const rule& r) const {
 	os << to_raw_term(r.t) << " :- ";
 	//if (r.f) os << "(form printing not supported yet)"; // TODO fix transform_bin
-	for (auto it = r.begin(); it != r.end(); ++it)
-		for (size_t n = 0; n != (*it)->t.size(); ++n)
-			os << to_raw_term((*it)->t[n]) << (n==(*it)->t.size()-1
-				? it == r.end()-1 ? "." : "; "
-				: ", ");
+	for (auto it = r.begin(); it != r.end(); ++it) {
+		for (size_t n = 0; n != (*it)->bltins.size(); ++n) {
+			os << to_raw_term((*it)->bltins[n]) <<
+				(n == (*it)->bltins.size() - 1
+					? it == r.end() - 1 ? "" : "; "
+					: ", ");
+		}
+		if ((*it)->bltins.size())
+			os << ((*it)->t.size() ? ", " : ".");
+		for (size_t n = 0; n != (*it)->t.size(); ++n) {
+			os << to_raw_term((*it)->t[n]) <<
+				(n == (*it)->t.size() - 1
+					? it == r.end()-1 ? "." : "; "
+					: ", ");
+		}
+	}
 	return os;
 }
+
 template
 basic_ostream<char>& tables::print(basic_ostream<char>&, const rule&) const;
 template basic_ostream<wchar_t>& tables::print(basic_ostream<wchar_t>&,
 	const rule&) const;
+
+template <typename T>
+basic_ostream<T>& tables::print(basic_ostream<T>& os, const sig& s) const {
+	bool sep = false;
+	os << dict.get_rel(s.first) << "/";
+	for (auto i : s.second) os << (sep?",":(sep=true,"")) << i;
+	return os;
+}
+template basic_ostream<char>& tables::print(basic_ostream<char>&, const sig&)
+	const;
+template basic_ostream<wchar_t>& tables::print(basic_ostream<wchar_t>&,
+	const sig&) const;
+
+template <typename T>
+basic_ostream<T>& tables::print(basic_ostream<T>& os, const table& t) const {
+	print(os << "#\t", t.s) << (t.internal ? "@":"")
+		<< (t.idbltin > -1 ? " builtin" : "")
+		<< endl;
+	for (auto r : t.r) print(os << "#\t\t", rules[r]) << endl;
+	return os;
+}
+template basic_ostream<char>& tables::print(basic_ostream<char>&, const table&)
+	const;
+template basic_ostream<wchar_t>& tables::print(basic_ostream<wchar_t>&,
+	const table&) const;
+
+template <typename T>
+basic_ostream<T>& tables::print(basic_ostream<T>& os) const {
+	os << "# " << tbls.size() << " tables:\n";
+	for (size_t n = 0; n != tbls.size(); ++n)
+		print(os << "# " << n << " ", tbls[n]);
+	return os << "# -" << endl;
+}
+template basic_ostream<char>& tables::print(basic_ostream<char>&) const;
+template basic_ostream<wchar_t>& tables::print(basic_ostream<wchar_t>&) const;
 
 template <typename T>
 basic_ostream<T>& operator<<(basic_ostream<T>& os, const dict_t& d) {
@@ -682,8 +846,72 @@ basic_ostream<T>& operator<<(basic_ostream<T>& os, const dict_t& d) {
 	for (size_t i = 0; i != d.nbltins(); ++i)
 		os << i << ":" << d.get_bltin(i)
 			<< (i != d.nbltins() - 1 ? ", " : "");
-	return os << endl;
+	return os << "\n# -" << endl;
 }
 template basic_ostream<char>& operator<<(basic_ostream<char>&, const dict_t&);
 template
 basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const dict_t&);
+
+template <typename T, typename VT>
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const std::vector<VT>& hs) {
+	os << "[ ";
+	for(size_t i = 0; i < hs.size(); i++) {
+		if(i != 0) os << ", ";
+		os << hs[i];
+	}
+	return os << " ]";
+}
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const bdd_handles&);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const bdd_handles&);
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const ints&);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const ints&);
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const uints&);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const uints&);
+
+template <typename T, typename T1, typename T2>
+basic_ostream<T>& operator<<(basic_ostream<T>& os, const std::map<T1,T2>& m) {
+	os << "{\n";
+	for (auto it : m) os << "\t" << it.first << ": " << it.second << endl;
+	return os << " }";
+}
+
+template basic_ostream<char>& operator<<(basic_ostream<char>&, const varmap&);
+template
+basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&, const varmap&);
+
+template basic_ostream<char>& operator<<(basic_ostream<char>&,
+	const std::map<size_t, int_t>&);
+template basic_ostream<wchar_t>& operator<<(basic_ostream<wchar_t>&,
+	const std::map<size_t, int_t>&);
+
+std::string to_string(const raw_term& rt, std::string delim, int_t skip) {
+	ostringstream ss;
+	ss << tuple{ rt, delim, skip };
+	return ss.str();
+}
+
+ostream_t& print_to_delimited(const raw_term& rt, bool& error, bool to,
+	bool delimited)
+{
+	if (rt.e.size() < 3 || (delimited && rt.e.size() == 3))
+		o::err() << "print: Too few arguments." << endl;
+	else {
+		size_t s = 0; // skip args
+		string ou = "output", delimiter = "";
+		ostringstream ss;
+		if (to)	       s++, ss << pair<elem,bool>{rt.e[1+s],true},
+				ou        = ss.str(), ss.str({});
+		if (delimited) s++, ss << pair<elem,bool>{rt.e[1+s],true},
+				delimiter = ss.str();
+		//COUT << "printing " << to << delimited << endl;
+		if (!outputs::exists(ou)) o::err() << "print_to: Output '" <<
+			ou << "' does not exist." << endl;
+		else return o::to(ou)
+			<< tuple<raw_term,string,int_t>{ rt, delimiter, s };
+	}
+	error = true;
+	return CNULL;
+}

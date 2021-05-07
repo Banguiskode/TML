@@ -139,9 +139,9 @@ test write_bdd_test = [] {
 };
 
 test read_bdd_test = [] {
-	V->clear();
+	V.clear();
 	{ archive a(TF1, 0, false); a.read_bdd(); }
-	bdd_mmap& pV = *V;
+	bdd_mmap& pV = V;
 	if (pV.size()!=8) return fail("bdd read failed, size does not match");
 	for (size_t i = 0; i != 8; ++i)
 		if (!(pV[i]==(data_bdd_read_expected[i])))
@@ -278,7 +278,7 @@ int main() {
 		read_options,
 		write_bdd_test,
 		read_bdd_test,
-		write_tables,
+//		write_tables,
 //		write_driver,
 //		read_driver,
 	};

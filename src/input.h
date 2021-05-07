@@ -20,6 +20,7 @@
 #include <iostream>
 #include <memory>
 #include <sys/stat.h>
+#include <algorithm>
 
 #include "defs.h"
 #include "dict.h"
@@ -28,7 +29,7 @@
 class archive;
 #define lexeme2str(l) string_t((l)[0], (l)[1]-(l)[0])
 
-typedef std::pair<int_t, bool> guard;
+enum state_value { INIT, START, ADDS, DELS, RULE, COND, FP, CURR };
 
 /**
  * input class contains input data. input can be one of three types: STDIN,
@@ -142,6 +143,8 @@ struct input {
 	}
 	bool parse_error(ccs offset, const char* err, ccs close_to);
 	bool parse_error(ccs offset, const char* err, lexeme close_to);
+	bool type_error( const char* err, lexeme l);
+	bool type_error(ccs offset, const char* err, ccs close_to);
 
 	static std::string file_read(std::string fname);
 	static std::string file_read_text(::FILE *f);
@@ -235,26 +238,63 @@ struct raw_prog;
 
 bool operator==(const lexeme& x, const lexeme& y);
 
-static const std::set<std::string> str_bltins =
-	{ "alpha", "alnum", "digit", "space", "printable", "count",
-		"rnd", "print", "lprint", "halt", "fail",
-		"bw_and", "bw_or", "bw_xor", "bw_not", "pw_add", "pw_mult"};
+// builtin defs moved into tables::init_builtins() in tables_builtins.cpp
+//static const std::set<std::string> str_bltins =
+//	{ "alpha", "alnum", "digit", "space", "printable", "count",
+//		"rnd", "print", "lprint", "halt", "fail",
+//		"bw_and", "bw_or", "bw_xor", "bw_not", "pw_add", "pw_mult"};
+//
+#define STR_TO_LEXEME(str) { (unsigned char *) (str), (unsigned char *) (str) + sizeof(str) - 1 }
 
 struct elem {
 	enum etype {
 		NONE, SYM, NUM, CHR, VAR, OPENP, CLOSEP, ALT, STR,
 		EQ, NEQ, LEQ, GT, LT, GEQ, BLTIN, NOT, AND, OR,
 		FORALL, EXISTS, UNIQUE, IMPLIES, COIMPLIES, ARITH,
-		OPENB, CLOSEB, OPENSB, CLOSESB,
+		OPENB, CLOSEB, OPENSB, CLOSESB, UTYPE, BLTINMOD,
 	} type;
 	t_arith_op arith_op = NOP;
-	int_t num = 0;
+	int_t num = 0; // NUM's number or BLTIN's forget/renew bits
+	// The string that represents variants of this element.
 	lexeme e{ 0, 0 };
 	char32_t ch;
 	elem() {}
 	elem(int_t num) : type(NUM), num(num) {}
 	elem(char32_t ch) : type(CHR), ch(ch) {}
+	elem(etype type) : type(type) {
+		switch(type) {
+			case EQ: e = STR_TO_LEXEME("="); break;
+			case OPENP: e = STR_TO_LEXEME("("); break;
+			case CLOSEP: e = STR_TO_LEXEME(")"); break;
+			case ALT: e = STR_TO_LEXEME("||"); break;
+			case NEQ: e = STR_TO_LEXEME("!="); break;
+			case LEQ: e = STR_TO_LEXEME("<="); break;
+			case GT: e = STR_TO_LEXEME(">"); break;
+			case LT: e = STR_TO_LEXEME("<"); break;
+			case GEQ: e = STR_TO_LEXEME(">="); break;
+			case NOT: e = STR_TO_LEXEME("~"); break;
+			case AND: e = STR_TO_LEXEME("&&"); break;
+			case FORALL: e = STR_TO_LEXEME("forall"); break;
+			case EXISTS: e = STR_TO_LEXEME("exists"); break;
+			case UNIQUE: e = STR_TO_LEXEME("unique"); break;
+			case IMPLIES: e = STR_TO_LEXEME("->"); break;
+			case COIMPLIES: e = STR_TO_LEXEME("<->"); break;
+			case OPENB: e = STR_TO_LEXEME("{"); break;
+			case CLOSEB: e = STR_TO_LEXEME("}"); break;
+			case OPENSB: e = STR_TO_LEXEME("["); break;
+			case CLOSESB: e = STR_TO_LEXEME("]"); break;
+			default: assert(false); //should never reach here
+		}
+	}
+	elem(bool b) {
+		num = b;
+		type = NUM;
+	}
 	elem(etype type, lexeme e) : type(type), e(e) {
+		DBG(assert(type!=NUM&&type!=CHR&&(type!=SYM||(e[0]&&e[1])));)
+	}
+	elem(etype type, t_arith_op arith_op, lexeme e) : type(type),
+			arith_op(arith_op), e(e) {
 		DBG(assert(type!=NUM&&type!=CHR&&(type!=SYM||(e[0]&&e[1])));)
 	}
 	etype peek(input* in);
@@ -274,12 +314,189 @@ struct elem {
 		return e == t.e;
 	}
 	bool operator!=(const elem& t) const { return !(*this == t); }
+	// Generate a fresh variable with respect to given dictionary.
+	static elem fresh_var(dict_t &d) {
+		return elem(elem::VAR, d.get_var_lexeme_from(d.get_fresh_var(0)));
+	}
+	// Generate a fresh symbol with respect to given dictionary.
+	static elem fresh_sym(dict_t &d) {
+		return elem(elem::SYM, d.get_sym(d.get_fresh_sym(0)));
+	}
+	// Generate a fresh symbol with respect to given dictionary.
+	static elem fresh_temp_sym(dict_t &d) {
+		return elem(elem::SYM, d.get_temp_sym(d.get_fresh_temp_sym(0)));
+	}
 	std::string to_str() const{
 		if (type == NUM) return to_string(to_string_t(num));
 		if (type == CHR) return to_string(to_string_t(ch)); 
 		return to_string(lexeme2str(e));			
 	}
 };
+
+struct utype{
+
+};
+
+struct primtype : utype {
+	elem el;
+	int_t bsz = -1;
+	enum _ptype {
+		NOP, UINT, UCHAR, SYMB
+	} ty = NOP;
+	bool parse(input *in, const raw_prog& prog);
+	bool operator==(const primtype& r) const {
+		return ty == r.ty && bsz == r.bsz;		
+	}
+	bool operator!=(const primtype& r) const {
+		return !(*this == r);		
+	}
+	std::string to_print(){
+		std::string s;
+		switch(ty){
+			case UINT: s.append("int"); break;
+			case UCHAR: s.append("char"); break;
+			case SYMB: s.append("sym"); break;
+			default: return s.append("error_type");break;
+		}
+		if(bsz>0) {
+			std::stringstream ss;
+			ss<<bsz;
+			s.append(":");
+			s.append(ss.str());
+		}
+		return s;
+	}
+	size_t get_bitsz(){
+		switch(ty){
+			case UINT: return bsz > 0 ? bsz: 4;
+			case UCHAR: return 4;
+			case SYMB: return 4;
+			default: return 0;
+		}
+	}
+};
+
+struct structype : utype {
+	elem structname;
+	std::vector<struct typedecl> membdecl;	
+	bool parse(input *in, const raw_prog& prog);
+	size_t get_bitsz(const std::vector<struct typestmt> & t){
+		DBG(bitsz > -1 ?  COUT<<"optimz" : COUT<<"";)
+		return (bitsz < 0)? bitsz = calc_bitsz(t) :  bitsz;
+	}
+	size_t get_bitsz(class environment &e){
+		DBG(bitsz > -1 ? COUT<<"optimz": COUT<<"";)
+		return (bitsz < 0)? bitsz = calc_bitsz(e) : bitsz;
+	}
+	private:
+	int_t bitsz = -1;
+	size_t calc_bitsz(const std::vector<struct typestmt> &);
+	size_t calc_bitsz(class environment &);
+};
+
+struct typedecl {
+	primtype pty;  
+	elem structname; // struct type
+	std::vector<elem> vars;
+	bool is_primitive(){
+		DBG(assert(structname.e[0] == NULL || pty.ty == primtype::NOP));
+		return pty.ty != primtype::NOP;
+	}
+	bool is_usertype(){
+		DBG(assert(structname.e[0] == NULL || pty.ty == primtype::NOP));
+		return structname.e[0] != NULL;
+	}
+	size_t get_param_count() {
+		return vars.size();
+	}
+
+	bool parse(input *in , const raw_prog& prog, bool multivar = true);
+};
+struct typestmt {
+	structype rty;
+	elem reln;
+	std::vector<typedecl> typeargs;
+	bool is_predicate(){
+		DBG(assert( reln.e[0] != NULL || rty.structname.e[0] != NULL ));
+		return reln.e[0] != NULL; 
+	}
+	bool is_typedef(){
+		DBG(assert( reln.e[0] != NULL || rty.structname.e[0] != NULL ));
+		return rty.structname.e[0] != NULL; 
+	}
+	bool parse(input *in, const raw_prog& prog);
+
+};
+
+class bit_dict;
+struct bit_term;
+struct bit_prog;
+struct bit_rule;
+struct raw_term;
+struct raw_prog;
+struct raw_rule;
+
+class bit_dict {
+	std::map<lexeme, size_t, lexcmp > syms;
+	std::map<lexeme, int_t, lexcmp > vars;
+	public:
+	size_t get_bit_sym(const elem &e) {
+		assert(e.type == elem::SYM);
+		if(syms.find(e.e) == syms.end())
+			syms.insert({e.e, syms.size()+1});
+		return syms[e.e];
+	}
+};
+
+struct bit_elem {
+	const elem &e;
+	size_t bsz;
+	bit_term &pbt;
+	bools p;
+	bit_elem(const elem &_e, size_t _bsz, bit_term &_pbt);
+	size_t pos(size_t bit_from_right /*, size_t arg, size_t args */) const;
+	bool to_elem( std::vector<elem> &) const;
+	void to_print() const;
+};
+struct bit_prog {
+	 
+	std::vector<bit_rule> vbr;
+	std::vector<bit_prog> nbp;
+	const raw_prog &rp;
+	bit_dict bdict;
+	bit_prog( const raw_prog& _rp);
+	bool to_raw_prog(raw_prog &) const;
+	void to_print() const;
+};
+
+struct bit_rule {
+	std::vector<bit_term> bh;
+	std::vector<std::vector<bit_term>> bb;
+	const raw_rule &rr;
+	bit_prog &pbp;
+	bit_rule(const raw_rule &_rr, bit_prog &_pbp);
+	bool to_raw_rule(raw_rule&) const;
+	void to_print() const;
+};
+
+struct bit_term {
+	int_t rel;
+	std::vector<bit_elem> vbelem;
+	const raw_term &rt;
+	bit_rule &pbr;
+	bit_term(const raw_term &_rt, bit_rule &_pbr); 
+	size_t get_typeinfo(size_t arg, const raw_term &rt);
+	bool to_raw_term(raw_term&) const;
+	void to_print() const;
+};
+
+
+/* A raw term is produced from the parsing stage. In TML source code, it
+ * takes the following form: <rel>(<arg1> <arg2> ... <argN>). A raw term can
+ * occur in both heads and bodies. For example, rel(a(b(c)d e)f) is a raw
+ * term with the following elements: 'rel', '(', 'a', '(', 'b', '(', 'c', 'd',
+ * 'e', ')', 'f', ')'. Interpreting terms in this way keeps the universe's
+ * size finite which in turn guarantees that TML programs terminate. */
 
 struct raw_term {
 
@@ -289,9 +506,37 @@ struct raw_term {
 	//NOTE: we can add FORM1, FORM2 etc to rtextype
 	// and replace t_arith_op by a form (once we do parse for compound arithmetic formulas)
 	t_arith_op arith_op = NOP;
-
+	// Elements of the raw term as described above.
 	std::vector<elem> e;
+	// A list formed from the raw-term's string by replacing opening parentheses
+	// with -1s, closing parentheses with -2s, and contiguous sequences of elements
+	// with their cardinality.
 	ints arity;
+	raw_term() {}
+	raw_term(const elem &rel_name, const std::set<elem> &args) {
+		e = { rel_name, elem(elem::OPENP) };
+		for(const elem &a : args) {
+			e.push_back(a);
+		}
+		e.push_back(elem(elem::CLOSEP));
+		calc_arity(nullptr);
+	}
+	raw_term(const elem &rel_name, const std::vector<elem> &args) {
+		e = { rel_name, elem(elem::OPENP) };
+		for(const elem &a : args) {
+			e.push_back(a);
+		}
+		e.push_back(elem(elem::CLOSEP));
+		calc_arity(nullptr);
+	}
+	raw_term(const std::vector<elem> &f) : e(f) { calc_arity(nullptr); }
+	raw_term(rtextype et, const std::vector<elem> &f) : extype(et), e(f) { calc_arity(nullptr); }
+	raw_term(rtextype et, t_arith_op arith_op, const std::vector<elem> &f) : extype(et), arith_op(arith_op), e(f) { calc_arity(nullptr); }
+	raw_term negate() const {
+		raw_term nrt = *this;
+		nrt.neg = !nrt.neg;
+		return nrt;
+	}
 	bool parse(input* in, const raw_prog& prog, bool is_form = false,
 		rtextype pref_type = raw_term::REL);
 	bool calc_arity(input* in);
@@ -302,6 +547,23 @@ struct raw_term {
 			extype == t.extype;
 			//iseq == t.iseq && isleq == t.isleq && islt == t.islt;
 		//return neg == t.neg && e == t.e && arity == t.arity;
+	}
+	static raw_term _true() {
+		return _false().negate();
+	}
+	static raw_term _false() {
+		return raw_term(raw_term::REL,
+			{elem(elem::SYM, STR_TO_LEXEME("false")), elem(elem::OPENP), elem(elem::CLOSEP)});
+	}
+	bool is_true() const {
+		return extype == raw_term::REL && e.size() == 3 &&
+			e[0].type == elem::SYM && neg &&
+			lexeme2str(e[0].e) == to_string_t("false");
+	}
+	bool is_false() const {
+		return extype == raw_term::REL && e.size() == 3 &&
+			e[0].type == elem::SYM && !neg &&
+			lexeme2str(e[0].e) == to_string_t("false");
 	}
 };
 
@@ -316,7 +578,18 @@ struct directive {
 	lexeme arg;
 	raw_term t;
 	int_t n;
-	enum etype { STR, FNAME, CMDLINE, STDIN, STDOUT, TREE, TRACE, BWD }type;
+	
+	elem domain_sym; // Formal name of a relation containing a domain
+	elem eval_sym; // Formal name of a relation containing an interpreter
+	elem codec_sym; // Formal name of a relation containing a codec
+	elem quote_sym; // Formal name of a relation containing a quotation
+	elem limit_num; // The maximum of domain tuple elements
+	elem arity_num; // The maximum length of domain tuples
+	elem timeout_num; // The number of database steps to be simulated
+	elem quote_str; // The literal string to be quoted.
+	
+	enum etype { STR, FNAME, CMDLINE, STDIN, STDOUT, TREE, TRACE, BWD,
+		EVAL, QUOTE, EDOMAIN, CODEC }type;
 	bool parse(input* in, const raw_prog& prog);
 };
 
@@ -339,8 +612,11 @@ bool operator==(const std::vector<raw_term>& x, const std::vector<raw_term>& y);
 
 struct raw_rule {
 	std::vector<raw_term> h;
+	// An empty b signifies the presence of a logical formula in prft if
+	// prft != nullptr, otherwise it signifies that this rule is a fact.
 	std::vector<std::vector<raw_term>> b;
-	sprawformtree prft = 0;
+	// Contains a tree representing the logical formula.
+	sprawformtree prft = nullptr;
 
 	enum etype { NONE, GOAL, TREE };
 	etype type = NONE;
@@ -354,7 +630,35 @@ struct raw_rule {
 	raw_rule(const raw_term& h, const std::vector<raw_term>& _b) : h({h}) {
 		if (!_b.empty()) b = {_b};
 	}
-	inline bool is_form() { return prft.get(); }
+	raw_rule(const raw_term& h, const std::vector<std::vector<raw_term>>& _b) : h({h}), b(_b) {}
+	raw_rule(const std::vector<raw_term> &h,
+			const std::vector<raw_term>& _b) : h(h) {
+		if (!_b.empty()) b = {_b};
+	}
+	raw_rule(const raw_term& h, const sprawformtree &prft) : h({h}), prft(prft) {}
+	raw_rule(const std::vector<raw_term> &h, const sprawformtree &prft) : h(h), prft(prft) {}
+	// Clear b and set prft
+	void set_prft(const sprawformtree &_prft) {
+		prft = _prft;
+		b.clear();
+	}
+	// Clear prft and set b
+	void set_b(const std::vector<std::vector<raw_term>> &_b) {
+		b = _b;
+		prft = nullptr;
+	}
+	void update_states(std::array<bool, 8>& has) {
+		if (is_form() || is_rule()) has[RULE] = true;
+		else for (auto hi : h) has[hi.neg ? DELS : ADDS] = true;
+	}
+	inline bool is_rule() const
+		{ return type == NONE && b.size() > 0 && prft.get() == nullptr; }
+	inline bool is_form() const
+		{ return prft.get() != nullptr && b.size() == 0; }
+	inline bool is_fact() const
+		{ return type == NONE && b.size() == 0 && prft.get() == nullptr; }
+	// If prft not set, convert b to prft, then return prft
+	sprawformtree get_prft() const;
 	static raw_rule getdel(const raw_term& t) {
 		raw_rule r(t, t);
 		return r.h[0].neg = true, r;
@@ -374,16 +678,19 @@ struct raw_prefix {
 
 struct raw_form_tree {
 	elem::etype type;
-	raw_term *rt; // elem::NONE is used to identify it
-	elem * el;
+	raw_term *rt = nullptr; // elem::NONE is used to identify it
+	elem * el = nullptr;
 
-	raw_form_tree *l;
-	raw_form_tree *r;
-
+	sprawformtree l = nullptr;
+	sprawformtree r = nullptr;
 	bool neg = false;
+	lexeme guard_lx = {0,0};
 
-	raw_form_tree (elem::etype _type, raw_term* _rt = NULL, elem *_el =NULL,
-		raw_form_tree *_l = NULL, raw_form_tree *_r = NULL)
+	raw_form_tree (elem::etype _type, const raw_term &_rt) : type(_type), rt(new raw_term(_rt)) {}
+	raw_form_tree (elem::etype _type, const elem &_el) : type(_type), el(new elem(_el)) {}
+	raw_form_tree (elem::etype _type, sprawformtree _l = nullptr, sprawformtree _r = nullptr) : type(_type), l(_l), r(_r) {}
+	raw_form_tree (elem::etype _type, const raw_term* _rt = NULL, const elem *_el =NULL,
+		sprawformtree _l = NULL, sprawformtree _r = NULL)
 	{
 		type = _type;
 		if(_rt) rt = new raw_term(*_rt);
@@ -393,21 +700,20 @@ struct raw_form_tree {
 		l = _l, r = _r;
 	}
 	~raw_form_tree() {
-		if (l)  delete l,  l  = NULL;
-		if (r)  delete r,  r  = NULL;
 		if (rt) delete rt, rt = NULL;
 		if (el) delete el, el = NULL;
 	}
 	void printTree(int level =0 );
+	static sprawformtree simplify(sprawformtree &t);
 };
 struct raw_sof {
 	const raw_prog& prog;
 	raw_sof(const raw_prog& prog) :prog(prog) {}
 private:
-	bool parseform(input* in, raw_form_tree *&root, int precd= 0);
-	bool parsematrix(input* in, raw_form_tree *&root);
+	bool parseform(input* in, sprawformtree &root, int precd= 0);
+	bool parsematrix(input* in, sprawformtree &root);
 public:
-	bool parse(input* in, raw_form_tree *&root);
+	bool parse(input* in, sprawformtree &root);
 };
 
 struct guard_statement {
@@ -416,33 +722,37 @@ struct guard_statement {
 	bool parse_if(input* in, dict_t &dict, raw_prog& rp);
 	bool parse_while(input* in, dict_t &dict, raw_prog& rp);
 	bool parse(input* in, dict_t &dict, raw_prog& rp);
-	sprawformtree prft;
-	int_t id = 0;
-	static int_t last_id;
+	sprawformtree prft;       // condition
+	int_t rp_id = 0;          // prog id in which to run the condition
+	int_t true_rp_id  = 0;    // id of a true  prog
+	int_t false_rp_id = 0;    // id of a false prog
+	raw_prog* p_break_rp = 0; // ptr to a prog to break if while cond. true
 };
 
 struct raw_prog {
 	enum ptype {
 		PFP, LFP, GFP
 	} type = PFP;
-	std::vector<macro> vm;
+	std::vector<macro> macros;
 	std::vector<directive> d;
 	std::vector<production> g;
 	std::vector<raw_rule> r;
 	std::vector<guard_statement> gs;
+	std::vector<struct typestmt> vts;
 	std::vector<raw_prog> nps;
-	guard grd;
 
 	std::set<lexeme, lexcmp> builtins;
 //	int_t delrel = -1;
 
 	int_t id = 0;
+	int_t guarded_by = -1;
+	int_t true_rp_id = -1;
+	std::array<bool, 8> has = { 0, 0, 0, 0, 0, 0, 0, 0 };
 	static int_t last_id;
-
-	raw_prog() { id = ++last_id; }
+	static bool require_guards;
 
 	bool parse(input* in, dict_t &dict);
-	bool parse_statement(input* in, dict_t &dict, guard grd = {-1,false});
+	bool parse_statement(input* in, dict_t &dict);
 	bool parse_nested(input* in, dict_t &dict);
 	bool parse_xfp(input* in, dict_t &dict);
 	bool macro_expand(input *in , macro mm, const size_t i, const size_t j, 
@@ -463,17 +773,24 @@ bool parse_error(ccs o, const char* e, std::string s);
 bool parse_error(ccs o, const char* e);
 bool parse_error(const char* e, lexeme l);
 bool parse_error(const char* e);
+bool type_error(const char* e, lexeme l);
+
+std::string to_string(const raw_term& rt, std::string delim="", int_t skip=0);
 
 template <typename T>
 std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const directive& d);
 template <typename T>
 std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const elem& e);
 template <typename T>
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const raw_form_tree &t);
+template <typename T>
 std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const raw_term& t);
 template <typename T>
-std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const raw_form_tree* prts);
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const sprawformtree prts);
 template <typename T>
-std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const std::pair<raw_term, std::string>& p);
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const std::pair<elem, bool>& p);
+template <typename T>
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const std::tuple<raw_term, std::string, int_t>& p);
 template <typename T>
 std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const raw_rule& r);
 template <typename T>
@@ -484,6 +801,20 @@ template <typename T>
 std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const production& p);
 std::basic_ostream<char>& operator<<(std::basic_ostream<char>& os, const lexeme& l);
 std::basic_ostream<wchar_t>& operator<<(std::basic_ostream<wchar_t>& os, const lexeme& l);
+template <typename T>
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const std::set<raw_term>& rts);
+template <typename T>
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os, const std::vector<raw_term>& rts);
+
+template <typename T, typename VT>
+std::basic_ostream<T>& operator<<(std::basic_ostream<T>& os,
+	const std::vector<VT>& v);
+
+// print elements to an output (and skip args if to or delimited)
+// if to then output name is the first argument (default: @output)
+// if delimited then delimiter string is the next argument (default: "")
+ostream_t& print_to_delimited(const raw_term& rt, bool& error, bool to = false,
+	bool delimited = false);
 
 template <typename T>
 std::basic_ostream<T>& print_raw_prog_tree(std::basic_ostream<T>& os,

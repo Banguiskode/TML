@@ -17,17 +17,26 @@
 #include "input.h"
 using namespace std;
 
-dict_t::dict_t() : op(get_lexeme("(")), cl(get_lexeme(")")) {}
+dict_t::dict_t() :  bitunv(false), op(get_lexeme("(")), cl(get_lexeme(")")) {}
 
 dict_t::~dict_t() { for (auto x : strs_allocated) free((char *)x); }
 
-lexeme dict_t::get_sym(int_t t) const {
-	DBG(assert(!(t&1) && !(t&2) && syms.size()>(size_t)(t>>2));)
-	static char_t str_nums[20], str_chr[] = { '\'', 'a', '\'' };
-	if (t & 1) { str_chr[1] = t>>=2; return { str_chr, str_chr + 3 }; }
-	if (t & 2) return strcpy(str_nums, to_string_t(t>>=2).c_str()),
-			lexeme{ str_nums, str_nums + strlen(str_nums) };
-	return syms[t>>2];
+lexeme dict_t::get_sym(int_t t) const {	
+	if (bitunv == false) {
+		DBG(assert(!(t&1) && !(t&2) && syms.size()>(size_t)(t>>2));)
+		static char_t str_nums[20], str_chr[] = { '\'', 'a', '\'' };
+		if (t & 1) { str_chr[1] = t>>=2; return { str_chr, str_chr + 3 }; }
+		if (t & 2) return strcpy(str_nums, to_string_t(t>>=2).c_str()),
+				lexeme{ str_nums, str_nums + strlen(str_nums) };
+		return syms[t>>2];
+	}
+	else {
+		DBG(assert(t>=0));
+		static char_t str_num[] = { '\'', 'a', '\'' };
+		if (t == 1 || t == 0) { str_num[1] = t; return { str_num, str_num + 3 }; }
+		DBG(assert(syms.size());)
+		return syms[t-2];
+	}
 }
 
 int_t dict_t::get_fresh_var(int_t old) {
@@ -83,7 +92,8 @@ int_t dict_t::get_rel(const lexeme& l) {
 int_t dict_t::get_sym(const lexeme& l) {
 	auto it = syms_dict.find(l);
 	if (it != syms_dict.end()) return it->second;
-	return syms.push_back(l), syms_dict[l] = (syms.size()-1)<<2;
+	return syms.push_back(l), 
+	syms_dict[l] = !bitunv?(syms.size()-1)<<2:(syms.size()-1+2);
 }
 
 int_t dict_t::get_bltin(const lexeme& l) {
@@ -119,3 +129,20 @@ int_t dict_t::get_temp_sym(const lexeme& l) {
 	return temp_syms.push_back(l), temp_syms_dict[l] = (temp_syms.size());
 }
 
+int_t dict_t::get_fresh_temp_sym(int_t old) {
+	static int_t counter = 0;
+	std::string fresh = "0tf" + to_string_(++counter) + to_string_(old);
+	int_t fresh_int = get_temp_sym(get_lexeme(fresh));
+	return fresh_int;
+}
+
+lexeme dict_t::get_temp_sym(int_t t) const {
+	return temp_syms[t-1];
+}
+
+ints dict_t::get_rels(function<bool(const lexeme&)> filter) {
+	ints filtered;
+	for (size_t i = 0; i != rels.size(); ++i)
+		if (!filter || filter(rels[i])) filtered.push_back(i);
+	return filtered;
+}

@@ -574,7 +574,7 @@ Example 2:
 
 Table below summarizes current arithmetic operator support:
 
-| Operation | Contractive Mode | Expansive Mode |
+| Operation | Pre-computed     | Ad-hoc         |
 | --------- | ---------------- | -------------- |
 | addition | ?x + ?y = ?z | pw_add(?x ?y ?z) |
 | multiplication | ?x * ?y = ?z | pw_mult(?x ?y ?z) |
@@ -607,61 +607,134 @@ Alternatively, if the user requires extended precision to keep all information o
 
 where ?zh accounts for the most significant bits (MSBs) of the operation and ?zl for the least significant bits (LSBs).
 
+## Fixed point detection programatically
+
+TML programmer can enable fixed point step by `-fp` (`-fp-step`) command line
+option. This option makes TML interpret to add a `__fp__` fact into program's
+database when it reaches a fixed point and it continues with execution until
+another fixed point. If `__fp__` fact exists in the database already it halts
+the execution.
+
+This way a TML programmer can have a rule depending on the `__fp__` fact.
+To continue execution of the program remove the `__fp__` fact.
+
+This fact is filtered out when printing the database data.
+
 # Rule guards
 
 To enable or disable a rule we can use additional term in rule's body. Existence
 of such a term guards execution of the rule.
 
-    guard.                      # guard fact is required for execution of
-    a_copy(?x) :- a(?x), guard. # this rule
+```
+	guard.                      # guard fact is required for execution of
+	a_copy(?x) :- a(?x), guard. # this rule
+```
 
-Rule guards are used for implementing **if** and **while** statements.
+# Transform guards
 
-To properly guard execution of nested programs, it is required to transform
-fact adds and fact deletions into rules. Because these happen in a sequence we
-need to transform each nested program into several consecutive states:
-initialization (__init), start (__start), adds (__add), deletions (__del) and
-rules (__rule).
+By using `-guards` (`-g`) command line option we can transform a TML program
+containing nested programs or **if** or **while** statements into a single TML
+program which uses rule guards to control execution of each program's state.
 
-There is also an additional and independent break (__break) state.
-If this state exists it prevents execution of all rules in the current program
-and thus forces a fixed point and ends its execution.
+To properly guard execution of nested programs it is required to transform
+all statements into a guarded rule. Because adds, dels, rules execution, and
+**if** and **while** conditions need to happen in a sequence we need to
+transform each program into several consecutive states (`N` is an id of the
+program): start state: `__N__start__`, adds state: `__N__add__`, deletions
+state: `__N__del__`, rules state: `__N__rule__`, conditions state: `__N__cond__`
+and a fixed point state: `__N__fp__`.
 
-Transformation of a TML program into states is enabled by using `-guards` (`-g`)
-command line option. With this option each nested program
+`__N__start` state is the beginning state of the program if it is a **while**
+guarded program, so its execution can be breaken before other states of the 
+program happen. if the program is guarded by **while** it also adds a
+`__N__curr__` fact. This fact guards the breaking condition of the **while**
+command.
 
-    { # with its unique id (let's say id of this nested prog is __1)
-        fact1, fact2.
-        ~fact2.
-        rule1 :- fact1.
-    }
+Not all states are always present in each program.
 
-becomes
+Program containing an adding of a fact will have `__N__add__` state.
+If program contains a deletion of a fact it will have `__N__del__` state.
+Program with at least a rule will have `__N__rule__` state.
+If there is an **if** condition it will have `__N__cond__` state.
+Program guarded by a **while** condition will have `__N__start__` state and it
+will also keep the `__N__curr__` fact existing while the program is running.
+So far only `__N__fp__` is the only state which is always present even in an
+empty program. (It is expected that this state would be optimized out too.)
 
-    {
-        __init (__1).
-        __start(__1), ~__init (__1) :-        __init (__1), ~__break(__1). # *
-        __add  (__1), ~__start(__1) :-        __start(__1), ~__break(__1).
-        __del  (__1), ~__add  (__1) :-        __add  (__1), ~__break(__1).
-        __rule (__1), ~__del  (__1) :-        __del  (__1), ~__break(__1).
+Transitioning from one state to another is done by state transitioning rules:
 
-         fact1, fact2               :-        __add  (__1), ~__break(__1).
-        ~fact2                      :-        __del  (__1), ~__break(__1).
-         rule1                      :- fact1, __rule (__1), ~__break(__1).
-    }
+```
+	~__previous_state__, __new_state__ :- __previous_state__.
+```
 
-An internal program is run after the program finishes. This program removes all
-the guards from the database. If you want to skip this phase and keep the guards
-use command line option `-keep-guards` (`-kg`). It can be  useful for debugging
-since it keeps last state guard of each nested program plus results of guarding
-statements.
+All program states take only a single step of the resulting TML program but the
+`__N__rule__` state. Rules state needs to run until the current program
+(rules guarded by `__N__rule__`) reaches its fixed point.
+To detect a fixed point of the program (in `__N__rule__` state) programatically
+we enable the [fp step](#fixed-point-detection-programatically) (`-g` enables
+`-fp` automatically) feature.
 
-To see transformed program use `-t` comand line option.
+With `__fp__` internal fact we can detect fixed point of a nested program and we
+can end the `__N__rule__` state and continue to the `__N__fp__` state:
+
+```
+	~__1__rule__, __1__fp__, ~__fp__ :- __1__rule__, __fp__.
+```
+
+The last state of the program is `__N__fp__` state. Existence of this fact
+guards execution of the program which follows in the sequence.
+
+Example: a simple program
+ 
+```
+	 fact1, fact2.
+	~fact2.
+	 rule1         :- fact1.
+```
+
+becomes:
+
+```
+	 __0__fp__.   # initial state of a TML program
+	 fact1, fact2                    :- __1__add__.
+	~fact2                           :- __1__del__.
+	 rule1                           :- __1__rule__, fact1.
+	~__0__fp__,   __1__add__         :- __0__fp__.
+	~__1__add__,  __1__del__         :- __1__add__.
+	~__1__del__,  __1__rule__        :- __1__del__.
+	~__1__rule__, __1__fp__, ~__fp__ :- __1__rule__, __fp__.
+	~__1__fp__                       :- __1__fp__.
+```
+
+A nested program:
+
+```
+	{ a(3). { a(2). } a(1). }
+```
+
+transforms into:
+
+```
+	 __0__fp__.
+	~__0__fp__,  __1__fp__  :- __0__fp__.
+	~__1__fp__              :- __1__fp__.
+	 a(3)                   :- __2__add__.
+	 a(1)                   :- __2__add__.
+	~__1__fp__,  __2__add__ :- __1__fp__.
+	~__2__add__, __2__fp__  :- __2__add__.
+	~__2__fp__              :- __2__fp__.
+	 a(2)                   :- __3__add__.
+	~__2__fp__,  __3__add__ :- __2__fp__.
+	~__3__add__, __3__fp__  :- __3__add__.
+	~__3__fp__              :- __3__fp__.
+```
+
+To see the `-g` transformed program use `-t` command line option.
 
 # Guarding statements
 
-Guard transformation enables usage of **if** and **while** statements.
-First order form is used as a condition. Guarded code is always nested
+Guard transformation also enables usage of **if** and **while** statements.
+First order formula is used as a condition. Guarded code is always nested
 eventhough it does not have to be surrounded by '{' and '}' if it is just
 a single rule or another guarding statement.
 
@@ -669,97 +742,394 @@ a single rule or another guarding statement.
 
 Syntax of **if** statement is:
 
-    if FORM then STATEMENT.                   # or
-    if FORM then STATEMENT else STATEMENT.
+```
+	if FORM then STATEMENT.                   # or
+	if FORM then STATEMENT else STATEMENT.
+```
 
-FORM is a first order form and STATEMENT can be another guarding statement,
+FORM is a first order formula and STATEMENT can be another guarding statement,
 a nested program or a rule (note that STATEMENT is always nested. It is parsed
 as a nested program, ie. `rule.` is parsed as `{ rule. }`).
 
-Example
+Example program:
 
-    A(10).
-    if exists ?x { A(?x) } then A_not_empty. else { A_empty. }
+```
+	A(10).
+	if exists ?x { A(?x) } then A_not_empty. else { A_empty. }
+```
 
-is equivalent to
+is equivalent to:
 
-    A(10).
-    if exists ?x { A(?x) } then { A_not_empty. } else A_empty.
+```
+	A(10).
+	if exists ?x { A(?x) } then { A_not_empty. } else A_empty.
+```
 
-produces
+produces result:
 
-    A(10).
-    A_not_empty.
+```
+	A(10).
+	A_not_empty.
+```
 
 **if** is implemented by transformation of a condition (FO formula) into a rule
-which adds a guard which then enables execution of the true (if then ...) or
-false (else ...) nested program.
+which is executed (condition is decided) when fp of the current program is
+reached.
 
-For above example such a rule would be (if id of the guard statement is __0)
+For above example such a rule would be.
 
-    __guard(__0) :- exists ?x { A(?x) }.
+```
+	__1__2__guard__ :- { __1__cond__ && { exists  ?x  { A(?x) } } }.
+```
 
-Each respective (true/false) nested program block gets added a new rule which
-is run in the __init state. Additionally, head of this rule is added into the
-rule which transitions from the __init to the __start state (marked above in
-Rule guards transformation example by # *)
+Execution of each respective (true/false) nested program block is guarded by
+existence or non-existence of the `__1__2__guard`.
 
-    { # true nested program block with id __1
-        __true (__0) :- __guard(__0), __init(__1).
-        __init (__1).
-        __start(__1),  ~__init (__1) :-
-		__init(__1), ~__break(__1), __true(__0).
-        #...
-    }
-    { # false nested program block with id __2
-        __false(__0) :- ~__guard(__0), __init(__2).
-        __init (__2).
-        __start(__2),   ~__init (__2) :-
-		__init(__2), ~__break(__2), __false(__0).
-        #...
-    }
+Full example program transformed:
+
+```
+	 __0__fp__.
+	 A(10)                        :- __1__add__.
+	~__0__fp__,       __1__add__  :- __0__fp__.
+	~__1__add__,      __1__cond__ :- __1__add__.
+	~__1__cond__,     __1__fp__   :- __1__cond__.
+	~__1__fp__                    :- __1__fp__.
+	 A_not_empty                  :- __2__add__.
+	~__1__2__guard__, __2__add__  :- __1__fp__,  __1__2__guard__.
+	~__2__add__,      __2__fp__   :- __2__add__.
+	~__2__fp__                    :- __2__fp__.
+	 A_empty                      :- __3__add__.
+	 __3__add__                   :- __1__fp__, ~__1__2__guard__.
+	~__3__add__,      __3__fp__   :- __3__add__.
+	~__3__fp__                    :- __3__fp__.
+	 __1__2__guard__
+		:- { __1__cond__ && { exists  ?x  { A(?x) } } }.
+```
 
 ## while do
 
 Syntax of **while** statement:
 
-    while FORM do STATEMENT.
+```
+	while FORM do STATEMENT.
+```
 
-FORM is a first order form and STATEMENT can be another guarding statement,
+FORM is a first order formula and STATEMENT can be another guarding statement,
 a nested program or a rule.
 
-Example
+Example program:
 
-    a(0). a(1). a(2). a(3). a(4).
-    i(0).
-    while ~ { b(1) } do {
-        b(?x), i(?x1), ~a(?x), ~i(?x) :-
-                        a(?x),  i(?x), ?x + 1 = ?x1.
-    }
+```
+	a(0). a(1). a(2). a(3). a(4).
+	i(0).
+	while ~ { b(1) } do {
+	        b(?x), i(?x1), ~a(?x), ~i(?x) :-
+	                a(?x),  i(?x), ?x + 1 = ?x1.
+	}
+```
 
 outputs following
 
-    a(4).
-    a(3).
-    i(3).
-    b(2).
-    b(1).
-    b(0).
+```
+	a(4).
+	a(3).
+	i(3).
+	b(2).
+	b(1).
+	b(0).
+```
 
-Note that while the guard creating rule for the **if** statement is executed in
-the parent program and is not checked anymore when it runs the nested true/false
-programs, guard rule for the **while** statement is executed each step of the
-nested program. Anytime such a rule becomes true it creates a __break state
-which disables all rules in the current program reaching the fixed point and
-continuing with execution to nested sequence of programs and then to next
-program in the current sequence.
+Note that while the guard rule for the **if** statement is executed when the
+parent program enters its fixed point state, condition of the **while**
+statement is checked each step of the nested program even before the add state.
 
-Also note that for breaking rule we need to negate the formula.
+**while** condition is negated into a breaking rule. When the rule becomes true
+it breaks the execution of the current program and reaches the fixed point.
 
-Example of a breaking rule which is added into the **while**'s nested program:
+Condition `~ { b(1) }` is transformed into this breaking rule:
 
-    __break(__0) :- ~ { ~ { b(1) } }.
+```
+	~__2__curr__, ~__2__start__, ~__2__rule__, __2__fp__
+	        :- { __2__curr__ && ~ ~ { b(1) }   }.
+```
 
+Full transformation of the above program:
+
+```
+	__0__fp__.
+	a(0), a(1), a(2), a(3), a(4), i(0)            :- __1__add__.
+	~__0__fp__,    __1__add__                     :- __0__fp__.
+	~__1__add__,   __1__fp__                      :- __1__add__.
+	~__1__fp__                                    :- __1__fp__.
+	b(?x), i(?x1), ~a(?x), ~i(?x)
+	        :- a(?x), i(?x), ?x+1=?x1,               __2__rule__.
+	~__1__fp__,    __2__start__, __2__curr__      :- __1__fp__.
+	~__2__start__, __2__rule__                    :- __2__start__.
+	~__2__rule__,  ~__fp__, __2__fp__             :- __2__rule__, __fp__.
+	~__2__curr__                                  :- __2__fp__, __2__curr__.
+	~__2__fp__                                    :- __2__fp__.
+	~__2__curr__, ~__2__start__, ~__2__rule__, __2__fp__
+	        :- { __2__curr__ && ~ ~ { b(1) }   }.
+```
+# Types and Type checking
+
+One can specify types for arguments of terms and predicates in the program. There are three primitive types **"int", "char" and "sym"** with default size of 4 bits each. The int can be further specialized with bit size like **int:2**, which says it is a type which holds only 2 bits ( possible four values).
+
+The predicates type signature can be specified with keyword **record** preceding relation/predicate name and by including types of the arguments as in example, 
+
+```
+
+record father( sym ?b).
+record edge (int:3 ?c, int:2 ?c ).
+record pair(int ?a, char ?b).
+
+```
+
+Here, father predicate can take argument of type sym, symbols. "edge" takes first argument of type 3 bit size and second as type 2 bits size.
+
+## Running checker for type errors
+The type checking will check for various type errors in the TML program for example. Running following program with "tml --bitprog " option will invoke the typechecking on the TML rules. ( the flage option would be removed in future, though currently specific)
+
+The following program has type mismatch for ?x in first rule. Running it with -bitprog option produces error
+```
+record e( int:5 ?a,  int:5 ?b).
+record tc( int:6 ?a, int:5 ?b).
+e(1 2 ).
+
+tc(?x ?y) :- e(?x ?z), tc(?z ?y).
+tc(?x ?y) :- e(?x ?y).
+
+Type error: "Type int:6 of ?x does not match expected type int:5 in predicate e(?x ?z)" close to "?x ?z), tc(?z ?y)."
+```
+
+Here ?x has expected type of int:6 as per "tc" signature, while int:5 as per "e". This results in type mismatch. 
+
+## Complex types with Struct
+
+One can specify complex types with **struct** key word like. 
+
+```
+struct person {
+    char ?y.
+    int ?age.
+}.
+```
+
+The total size of this person type is now the sum of all primitive types. One can also nest struct within a struct type like this.
+```
+struct address {
+    int ?num
+    person ?p.
+}.
+```
+At the moment, the individual members of struct are not accessible (in future).
+
+## Type Errors
+
+Other examples of type errors are wrong arity, undefined types, exceeding max bit sizes etc. For example, for program below, we get
+```
+struct sttyp2 {
+    char ?y.
+    sttyp2 ?recursive_not_Allowed.
+}
+struct styp {
+    int:2 ?c, ?z .
+    sttyp2 ?inner, ?in3.
+}
+record father( sym ?b).
+record canFly( sym ?c ).
+record edge (int:3 ?c, int:2 ?c ).
+record night( int:2 ?A).
+record pair(int ?a, char ?b).
+record school ( undeftype ?name,  sttyp2 ?l ).
+
+father(fff wrongargcount).
+#father(Tom Amy).  
+canFly(bird).      
+#canFly("bird").
+edge('c' 1).         # typemismatch
+night(4).             # It's night.
+pair(1 2).         # typemismatch
+edge(?x ?y) :- edge(?x ?z), edge(?z ?y).
+school( notyet notyet).
+
+Type error: "Expected arity for father(fff wrongargcount) is 1" close to "father(fff wrongargcount)."
+Type error: "Expected type for argument 1:c is int:3 in predicate edge('c' 1)"
+Type error: "Expected type for argument 2:2 is char in predicate pair(1 2)" close to "2).         # typemismatch"
+Type error: "Type int:2 of ?z does not match expected type int:3 in predicate edge(?z ?y)" close to "?z ?y)."
+Type error: "Type undeftype of notyet is undefined" close to "notyet notyet)."
+Type error: "4 exceeds max size for int:2 in predicate night(4)" close to "4).             # It's night."
+
+```
+
+# Conjunctive Query Containment (CQC)
+This section lists the optimizations based on CQC tests that have been
+implemented in the interpreter, what exactly they do to TML source code,
+the command line flags required to enable them, and their potential
+drawbacks. Note that the flag `--3pfp` should be enabled when using any
+of these optimizations because their internals sometimes cause
+alternating fixpoints. Note also that the results of a program obtained
+by applying these optimizations to another should be indistinguishable
+from those of the original.
+
+## Subsumption without Negation
+This pair of optimizations is based on the CQC test as described on
+section 1.1 of "Information Integration Using Logical Views" by Ullman.
+
+The first of the optimization pair tries to identify redundant conjunctive
+rules in a TML codebase. It does this by iterating through all unordered
+pairs of conjunctive rules corresponding to the same relation and formally
+checking whether the facts derived by one rule are necessarily derived by
+the other rule. If this is the case, then it follows that the former rule
+is redundant.
+
+The second of the optimization pair tries to identify redundant terms in
+conjunctive rule bodies by checking whether a rule is contained by one
+obtained by removing a body term. If this is so then the body term can be
+removed to obtain an equivalent rule since this rule's derivation set would
+both be a subset and superset of the original's.
+
+This optimization can be enabled using the flag `--cqc-subsume`.
+## Subsumption with Negation
+This pair of optimizations is based on the Conjunctive Query Containment
+(CQNC) test as described in section 1.2 of "Information Integration Using
+Logical Views" by Ullman.
+
+The details of this optimization pair are the same as those of the
+negation-less case as described above, except this pair additionally works
+on conjunctive rules containing terms with negation. This optimization pair
+is strictly more general than those for the negation-less case, however
+this comes at a cost: this optimization pair is much slower than the one
+for the negation-less case. This can be seen from the Ullman paper where
+the containment checker must iterate through partitions of a given set and
+amongst other operations, iterate through the powerset of the set of terms
+formed by taking the cartesian power of some set of atoms.
+
+This optimization can be enabled using the flag `--cqnc-subsume`.
+## Factorization
+This algorithm shares a similar spirit to the CQC test in that it
+searches for homomorphisms between different rules. The difference here
+though is that rule heads are not included in the homomorphism checks.
+This exclusion allows us to check whether certain body parts of a rule
+are contained by the body parts of another. And when containment is
+verified, we simply create another rule corresponding to the intersection
+of the original rules and make the original rules point to this newly
+created rules.
+
+This optimization can cause the TML program to slowdown so when it
+is desired to increase the speed of a TML program, one should try running
+it both with and without this optimization and proceed accordingly. The
+potential slowdown can be attributed to the fact that additional terms
+and rules are required to correctly sequence the temporary rules in the
+case that the original program used negation.
+
+This optimization can be enabled using the flag `--cqc-factor`.
+
+# Self Interpretation
+This section lists the directives provided to support
+self-interpretation, how to invoke them, and what they do at runtime.
+The flag `--3pfp` should be used in conjunction with these dirrectives
+because their internals sometimes cause alternating fixpoints. Note
+that anything that can be achieved using these directives can also
+be achieved without them in pure TML.
+
+## Domain
+The domain directive creates a domain over which a quoted program can
+be defined and executed. Conceptually it is necessary to allow quoted
+programs to manipulate terms of arbitrary arities without requiring
+changes/extensions to the quotation schema nor the quotation operator
+nor the evaluation operator. Concretely it is required to instantiate
+quotations, evaluators, and codecs.
+
+This directive has the following syntax:
+`@domain <domain_sym> <limit_num> <arity_num>.`. Here `<domain_sym>` is
+the prefix that all relations generated for the domain should have.
+`<limit_num>` is the tuple element domain size. And `<arity_num>` is the
+maximum length of the tuples generated for this domain.
+
+An example of usage:
+```
+@domain dom 7 3.
+```
+
+## Quote
+The quote directive takes a literal TML program and creates a relation
+that when correctly interpreted produces the same facts that would have
+been produced by the literal program. Conceptually it is required to
+enable TML programs to manipulate and inspect other TML programs.
+Concretely it is required to instantiate evaluators.
+
+This directive has the following syntax:
+`@quote <quote_sym> <domain_sym> <quote_str>.` Here `<quote_sym>` is the
+prefix that all relations generated for the quotation should have.
+`<domain_sym>` is the domain over which arbitrary length fragments (like
+terms) in the quotation are defined. Additionally the `<limit_num>` of
+the domain must be more than or equal to the maximum number of distinct
+variables used in a rule of `<quote_str>` because variables are encoded
+as numbers. Also the `<limit_num>` of the domain must be more than the
+largest number occuring in `<quote_str>`. Also, the `<arity_num>` of the
+domain must be more than or equal to the maximum of the term arities
+occuring in `<quote_str>` because term tuples are represented by lists.
+(This setup is what allows us to encode arbitrary arity terms without
+modifications to the schema.) `<quote_str>` is a literal TML program
+surrounded in backquotes to quote.
+
+An example of usage:
+```
+@quote quote dom `
+  u(0).
+  d(0).
+  c() :- forall ?x {u(?x) -> d(?x)}.`.
+```
+
+Currently the quote operator only supports TML programs with facts,
+rules, and formulas utilizing only variables and numbers. There are
+plans to extend this to symbols, arithmetic, and eventually the rest of
+TML.
+## Eval
+The evaluate directive takes a relation containing a quotation and a
+relation containing a domain and creates a relation containing the facts
+that would have been derived by the original program that was quoted.
+Conceptually it is required to see what the program represented by a
+(potentially statically unknown) relation would produce at runtime.
+Concretely it is required to instantiate codecs.
+
+This directive has the following syntax:
+`@eval <eval_sym> <domain_sym> <quote_sym> <timeout_num>.` Here
+`<eval_sym>` is the prefix that all relations generated for the
+interpreter should have. `<domain_sym>` is the relation name of the
+domain representing the universe over which the quoted program should be
+interpreted. `<quote_sym>` is the relation containing the quoted program
+to run. Additionally, the `<arity_num>` of `<domain_sym>` must be more
+than or equal to the maximum number of variables used by a rule in
+`<quote_sym>` because the value of each variable is stored in a list
+during interpretation. `<timeout_num>` is the number of steps of the quoted program
+that should be simulated.
+
+An example of usage:
+```
+@eval out dom quote 50.
+```
+## Codec
+The codec directive takes a relation containing a domain, a relation
+containing an interpreter, and a maximum term arity; and produces a
+relation containing a decoding of the facts produced by the interpreter.
+Conceptually it is necessary because the evaluator's lack of dependence
+on specific arity maximums forces it to produce outputs that are encoded
+and hence are hard to debug/use.
+
+This directive has the following syntax:
+`@codec <codec_sym> <domain_sym> <eval_sym> <arity_num>.` Here
+`<codec_sym>` is the prefix that all relations generated or the codec
+should have. `<domain_sym>` is the relation name of the domain that will
+be used to decode the encoded outputs of an evaluator. `<eval_sym>` is
+the relation name of the evaluator whose outputs are being decoded.
+`<arity_num>` is the maximum arity of the terms being decoded.
+
+An example of usage:
+```
+@codec cdc dom out 3.
+```
 
 # Misc
 

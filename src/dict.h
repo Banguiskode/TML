@@ -14,6 +14,7 @@
 #define __DICT_H__
 #include "defs.h"
 #include <map>
+#include <functional>
 
 class inputs;
 class archive;
@@ -26,12 +27,13 @@ class dict_t {
 	std::set<lexeme, lexcmp> strs_extra;
 	std::vector<ccs> strs_allocated;
 	inputs* ii;
+	bool bitunv;
 public:
 	dict_t();
 	dict_t(const dict_t& d) : syms_dict(d.syms_dict), vars_dict(d.vars_dict),
 		rels_dict(d.rels_dict), bltins_dict(d.bltins_dict), temp_syms_dict(d.temp_syms_dict),
 		vars(d.vars), syms(d.syms), rels(d.rels), bltins(d.bltins),
-		ii(d.ii), op(d.op), cl(d.cl) { // strs_extra(d.strs_extra), 
+		ii(d.ii), bitunv(d.bitunv), op(d.op), cl(d.cl) { // strs_extra(d.strs_extra), 
 		DBG(assert(false);); // we shouldn't be copying, use move instead
 		std::map<ccs, ccs> remap;
 		for (ccs c : d.strs_allocated) {
@@ -65,7 +67,7 @@ public:
 		//types(std::move(d.types)), 
 		strs_extra(std::move(d.strs_extra)),
 		strs_allocated(std::move(d.strs_allocated)),
-		ii(d.ii),
+		ii(d.ii), bitunv(d.bitunv),
 		op(std::move(d.op)), cl(std::move(d.cl)) {
 		std::fill(std::begin(d.op), std::end(d.op), nullptr);
 		std::fill(std::begin(d.cl), std::end(d.cl), nullptr);
@@ -73,18 +75,23 @@ public:
 	}
 	lexeme op, cl;
 	bool is_valid_sym(int_t arg) const {
-		return ( (arg &1) || (arg&2) || (size_t(arg>>2) < syms.size()));
+		return bitunv == false ? ((arg &1) || (arg&2) || (size_t(arg>>2) < syms.size())):
+				(arg > 1 && (size_t(arg-2) < syms.size()));
 	}
 	void set_inputs(inputs* ins) { ii = ins; }
+	void set_bitunv(bool bu) { bitunv = bu; }
 	const lexeme& get_rel(int_t t) const { return rels[t]; }
 	const lexeme& get_bltin(int_t t) const { return bltins[t]; }
+	bool is_temp_sym(const lexeme& l) const { return temp_syms_dict.find(l) != temp_syms_dict.end(); }
 	lexeme get_sym(int_t t) const;
+	lexeme get_temp_sym(int_t t) const;
 	int_t get_var(const lexeme& l);
 	int_t get_rel(const lexeme& l);
 	int_t get_sym(const lexeme& l);
 	int_t get_temp_sym(const lexeme& l);
 	int_t get_bltin(const lexeme& l);
 	int_t get_fresh_sym(int_t old);
+	int_t get_fresh_temp_sym(int_t old);
 	int_t get_fresh_var(int_t old);
 	lexeme get_var_lexeme_from(int_t r);
 	lexeme get_lexeme(ccs w, size_t l = (size_t)-1);
@@ -96,6 +103,7 @@ public:
 	size_t nvars() const { return vars_dict.size(); }
 	size_t nrels() const { return rels.size(); }
 	size_t nbltins() const { return bltins.size(); }
+	ints get_rels(std::function<bool(const lexeme&)> filter = nullptr);
 
 	// copy and swap (utilize move)
 	dict_t& operator=(dict_t d) {
@@ -113,6 +121,7 @@ public:
 			swap(temp_syms_dict, d.temp_syms_dict),
 			swap(strs_extra, d.strs_extra),
 			swap(ii, d.ii),
+			swap(bitunv, d.bitunv),
 			swap(op, d.op),
 			swap(cl, d.cl),
 			//swap(types_dict, d.types_dict),

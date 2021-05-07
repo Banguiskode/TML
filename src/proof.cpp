@@ -16,8 +16,9 @@
 
 using namespace std;
 
-vector<env> tables::varbdd_to_subs(const alt* a, size_t rl, size_t level, cr_spbdd_handle v)
-	const {
+vector<env> tables::varbdd_to_subs(const alt* a, size_t /*rl*/, size_t/*level*/,
+	cr_spbdd_handle v) const
+{
 	vector<env> r;
 	decompress(v, 0, [a, &r, this](const term& x) {
 		env m;
@@ -159,10 +160,10 @@ bool tables::get_goals(std::basic_ostream<T>& os) {
 		decompress(tbls[t.tab].t && from_fact(t), t.tab,
 			[&s](const term& t) { s.insert(t); }, t.size());
 	for (const term& g : s)
-		if (bproof) get_proof(g, p, levels.size() - 1);
+		if (opts.bproof) get_proof(g, p, levels.size() - 1);
 		else os << to_raw_term(g) << '.' << endl;
-	if (bproof) print(os, p);
-	return goals.size() || bproof;
+	if (opts.bproof) print(os, p);
+	return goals.size() || opts.bproof;
 }
 template bool tables::get_goals(std::basic_ostream<char>&);
 template bool tables::get_goals(std::basic_ostream<wchar_t>&);

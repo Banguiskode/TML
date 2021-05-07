@@ -22,11 +22,15 @@
 #include "defs.h"
 #include "memory_map.h"
 
-#define fpairing(x, y) \
-	((((size_t)(x)+(size_t)(y))*((size_t)(x)+(size_t)(y)+1)>>1)+(size_t)(y))
 #define neg_to_odd(x) (((x)<0?(((-(x))<<1)+1):((x)<<1)))
 #define hash_pair(x, y) fpairing(neg_to_odd(x), neg_to_odd(y))
 #define hash_tri(x, y, z) fpairing(hash_pair(x, y), neg_to_odd(z))
+
+inline size_t fpairing(size_t x, size_t y) {
+	size_t z = x + y;
+	z *= z+1;
+	return y+(z>>1);
+}
 
 extern bool onexit;
 
@@ -101,7 +105,7 @@ int_t bdd_or_reduce(bdds b);
 size_t bdd_nvars(spbdd_handle x);
 size_t bdd_nvars(bdd_handles x);
 vbools allsat(cr_spbdd_handle x, uint_t nvars);
-extern std::unique_ptr<bdd_mmap> V;
+extern bdd_mmap V;
 extern size_t max_bdd_nodes;
 extern mmap_mode bdd_mmap_mode;
 
@@ -109,19 +113,19 @@ extern mmap_mode bdd_mmap_mode;
 // struct veccmp {
 // 	bool operator()(const std::vector<T>& x, const std::vector<T>& y) const;
 // };
-// 
+//
 // template<typename T1, typename T2>
 // struct vec2cmp {
 // 	typedef std::pair<std::vector<T1>, std::vector<T2>> t;
 // 	bool operator()(const t& x, const t& y) const;
 // };
-// 
+//
 // template<typename T1, typename T2, typename T3>
 // struct vec3cmp {
 // 	typedef std::tuple<std::vector<T1>, std::vector<T2>, std::vector<T3>> t;
 // 	bool operator()(const t& x, const t& y) const;
 // };
-// 
+//
 // // these are extern because archive needs access to them. TODO: make it better
 // extern std::vector<std::unordered_map<bdd_key, int_t>> Mp, Mn;
 // extern std::unordered_map<ite_memo, int_t> C;
@@ -142,9 +146,6 @@ extern mmap_mode bdd_mmap_mode;
 
 void bdd_size(cr_spbdd_handle x,  std::set<int_t>& s);
 int_t bdd_root(cr_spbdd_handle x);
-spbdd_handle bdd_and_hl(cr_spbdd_handle x);
-spbdd_handle bdd_or_hl(cr_spbdd_handle x);
-spbdd_handle bdd_xor_hl(cr_spbdd_handle x);
 spbdd_handle bdd_not(cr_spbdd_handle x);
 spbdd_handle bdd_xor(cr_spbdd_handle x, cr_spbdd_handle y);
 spbdd_handle bdd_bitwise_and(cr_spbdd_handle x, cr_spbdd_handle y);
@@ -204,9 +205,6 @@ class bdd {
 	friend int_t bdd_root(cr_spbdd_handle x);
 	friend spbdd_handle bdd_not(cr_spbdd_handle x);
 	friend spbdd_handle bdd_xor(cr_spbdd_handle x, cr_spbdd_handle y);
-	friend spbdd_handle bdd_and_hl(cr_spbdd_handle x);
-	friend spbdd_handle bdd_or_hl(cr_spbdd_handle x);
-	friend spbdd_handle bdd_xor_hl(cr_spbdd_handle x);
 	friend spbdd_handle bdd_quantify(cr_spbdd_handle x, const std::vector<quant_t> &quants,
 			const size_t bits, const size_t n_args);
 	friend spbdd_handle bdd_bitwise_and(cr_spbdd_handle x, cr_spbdd_handle y);
@@ -218,10 +216,10 @@ class bdd {
 
 	inline static bdd get(int_t x) {
 		if (x > 0) {
-			const bdd &y = (*V)[x];
+			const bdd &y = V[x];
 			return y.v > 0 ? y : bdd(-y.v, y.l, y.h);
 		}
-		const bdd &y = (*V)[-x];
+		const bdd &y = V[-x];
 		return y.v > 0 ? bdd(y.v, -y.h, -y.l) : bdd(-y.v, -y.l, -y.h);
 	}
 
@@ -274,22 +272,15 @@ class bdd {
 	//---
 	static void bdd_sz_abs(int_t x, std::set<int_t>& s);
 	static int_t bdd_xor(int_t x, int_t y);
-	static int_t bdd_and_hl(int_t b);
-	static int_t bdd_or_hl(int_t b);
-	static int_t bdd_xor_hl(int_t b);
 	static int_t bdd_quantify(int_t x, int_t bit, const std::vector<quant_t> &quants,
 			const size_t bits, const size_t n_args);
-
-	static int_t bitwiseAND(int_t a_in, int_t b_in);
-	static int_t bitwiseOR(int_t a_in, int_t b_in);
-	static int_t bitwiseXOR(int_t a_in, int_t b_in);
-	static int_t bitwiseNOT(int_t a_in);
-
-	static int_t ADDER(int_t a_in, int_t b_in, bool carry, size_t bit);
-
+	static int_t bitwise_and(int_t a_in, int_t b_in);
+	static int_t bitwise_or(int_t a_in, int_t b_in);
+	static int_t bitwise_xor(int_t a_in, int_t b_in);
+	static int_t bitwise_not(int_t a_in);
+	static int_t adder(int_t a_in, int_t b_in, bool carry, size_t bit);
 	typedef enum { L, H, X, U } t_path;
 	typedef std::vector<t_path> t_pathv;
-
 	static bool bdd_next_path(std::vector<bdd> &a, int_t &i, int_t &bit, t_pathv &path,
 			size_t bits, size_t n_args);
 	static int_t balance_paths(t_pathv & next_path_a, t_pathv & next_path_b, size_t bits,
@@ -308,21 +299,18 @@ class bdd {
 			t_pathv &path_a, t_pathv &path_b, t_pathv &pathX_a, t_pathv &pathX_b);
 	static int_t merge_pathX(size_t i, size_t bits, bool carry, size_t n_args, size_t depth,
 			t_pathv &path_a, t_pathv &path_b, t_pathv &pathX_a, t_pathv &pathX_b);
-
 	static void satcount_arith(bdd a_in, size_t bit, size_t bits, size_t factor, size_t n_args, size_t &count);
 	static int_t zero(size_t arg, size_t bits, size_t n_args);
 	static bool is_zero(int_t a_in, size_t bits);
-
-	static void ADDER_BE(int_t a_in, int_t b_in, size_t bits, size_t depth,
+	static void adder_be(int_t a_in, int_t b_in, size_t bits, size_t depth,
 			size_t n_args, int_t &c);
-	static int_t ADDER_ACCS(int_t b_in, int_t accs, size_t depth, size_t bits, size_t n_args);
-	static void MULT_DFS(int_t a_in, int_t b_in, int_t *accs, size_t depth, size_t bits,
+	static int_t adder_accs(int_t b_in, int_t accs, size_t depth, size_t bits, size_t n_args);
+	static void mult_dfs(int_t a_in, int_t b_in, int_t *accs, size_t depth, size_t bits,
 			size_t n_args, int_t &c) ;
-
-	static int_t COPY(int_t a_in);
-	static int_t COPY_ARG2ARG(int_t a , size_t arg_a, size_t arg_b, size_t bits, size_t n_args);
-	static int_t SHR(int_t a_in, size_t arg, size_t bits, size_t n_args);
-	static int_t SHLx(int_t b_in, size_t x, size_t bits, size_t n_args);
+	static int_t copy(int_t a_in);
+	static int_t copy_arg2arg(int_t a , size_t arg_a, size_t arg_b, size_t bits, size_t n_args);
+	static int_t shr(int_t a_in, size_t arg, size_t bits, size_t n_args);
+	static int_t shlx(int_t b_in, size_t x, size_t bits, size_t n_args);
 
 public:
 	bdd(int_t v, int_t h, int_t l);
@@ -335,16 +323,16 @@ public:
 	template <typename T>
 	static std::basic_ostream<T>& stats(std::basic_ostream<T>& os);
 	inline static int_t hi(int_t x) {
-		return	x < 0 ? (*V)[-x].v < 0 ? -(*V)[-x].l : -(*V)[-x].h
-			: (*V)[x].v < 0 ? (*V)[x].l : (*V)[x].h;
+		return	x < 0 ? V[-x].v < 0 ? -V[-x].l : -V[-x].h
+			: V[x].v < 0 ? V[x].l : V[x].h;
 	}
 
 	inline static int_t lo(int_t x) {
-		return	x < 0 ? (*V)[-x].v < 0 ? -(*V)[-x].h : -(*V)[-x].l
-			: (*V)[x].v < 0 ? (*V)[x].h : (*V)[x].l;
+		return	x < 0 ? V[-x].v < 0 ? -V[-x].h : -V[-x].l
+			: V[x].v < 0 ? V[x].h : V[x].l;
 	}
 
-	inline static uint_t var(int_t x) { return abs((*V)[abs(x)].v); }
+	inline static uint_t var(int_t x) { return abs(V[abs(x)].v); }
 
 	static size_t satcount_perm(int_t x, size_t leafvar);
 	static size_t satcount_perm(const bdd& bx, int_t x, size_t leafvar);
@@ -392,7 +380,7 @@ class satcount_iter {
 public:
 	satcount_iter(cr_spbdd_handle r, uint_t nvars, const bools& inv) :
 		r(r->b), nvars(nvars), p(nvars), inv(inv), vp() {}
-	size_t count() { 
+	size_t count() {
 		sat(r);
 		return vp.size();
 	}

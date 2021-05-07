@@ -20,8 +20,11 @@
 #include "output.h"
 using namespace std;
 
-#define mkchr(x) ((((int_t)x)<<2)|1)
-#define mknum(x) ((((int_t)x)<<2)|2)
+#define mkchr(x) (opts.bitunv? ((int_t)(x)):(((((int_t)(x))<<2)|1)))
+#define mknum(x) (opts.bitunv? ((int_t)(x)):(((((int_t)(x))<<2)|2)))
+
+//#define mkchr(x) ((((int_t)x)))
+//#define mknum(x) ((((int_t)x)))
 
 size_t sig_len(const sig& s) {
 	size_t r = 0;
@@ -243,7 +246,8 @@ term tables::from_raw_term(const raw_term& r, bool isheader, size_t orderid) {
 			tbls[tab].bltinsize = nvars; // number of vars (<0)
 			//count_if(t.begin(), t.end(), [](int i) { return i < 0; });
 		}
-		return term(r.neg, tab, t, orderid, idbltin);
+		return term(r.neg, tab, t, orderid, idbltin,
+			(bool) (r.e[0].num & 1), (bool) (r.e[0].num & 2));
 	}
 	return term(r.neg, extype, r.arith_op, tab, t, orderid);
 	// ints t is elems (VAR, consts) mapped to unique ints/ids for perms.
@@ -487,7 +491,7 @@ It is caller's responsibility to manage the memory of froot. If the function,
 returns false or the froot is not needed any more, the caller should delete the froot pointer.
 For a null input argument rfm, it returns true and makes froot null as well.
 	*/
-bool tables::from_raw_form(const raw_form_tree *rfm, form *&froot, bool &is_sol) {
+bool tables::from_raw_form(const sprawformtree rfm, form *&froot, bool &is_sol) {
 
 	form::ftype ft = form::NONE;
 	bool ret =false;
@@ -570,24 +574,101 @@ void form::printnode(int lv, const tables* tb) {
 
 template <typename T>
 void tables::out(basic_ostream<T>& os) const {
-	strs_t::const_iterator it;
-	for (ntable tab = 0; (size_t)tab != tbls.size(); ++tab)
+	//strs_t::const_iterator it;
+	for (ntable tab = 0; (size_t)tab != tbls.size(); ++tab) {
 //		if ((it = strs.find(dict.get_rel(tab))) == strs.end())
-			out(os, tbls[tab].t, tab);
+		if (!tbls[tab].internal) out(os, tbls[tab].t, tab);
 //		else os << it->first << " = \"" << it->second << '"' << endl;
+	}
 }
 
 template void tables::out<char>(ostream& os) const;
 template void tables::out<wchar_t>(wostream& os) const;
 
+/* Print out the fixpoint associated with this sequence of databases and
+ * return true. Return false if this sequence of databases contains no
+ * repeats. */
+
+template <typename T>
+bool tables::out_fixpoint(basic_ostream<T>& os) {
+	if(fronts.size() < 2 ||
+			std::find(fronts.begin(), fronts.end()-1, fronts.back()) ==
+			fronts.end()-1) {
+		// There cannot be a fixpoint if there are less than two fronts or
+		// if there do not exist two equal fronts
+		return false;
+	} else if (opts.pfp3) {
+		// If FO(3-PFP) semantics are in effect
+		// Determine which facts are true and which are false
+		level trues(tbls.size(), htrue), falses(tbls.size(), htrue);
+		int_t i = fronts.size() - 1;
+		// Loop back to the first repetition of the last front. It is clear
+		// that the set of intervening fronts are periodic
+		do {
+			for(ntable n = 0; n < (ntable)tbls.size(); n++) {
+				// True facts are those for which there exists an I such that
+				// for all i>=I, the fact is a member of front i
+				trues[n] = trues[n] && fronts[i][n];
+				// False facts are those for which there exists an I such that
+				// for all i>=I, the fact is not a member of front i
+				falses[n] = falses[n] % fronts[i][n];
+			}
+		} while(fronts[--i] != fronts.back());
+		// Determine which facts are undefined
+		level undefineds(tbls.size());
+		for(ntable n = 0; n < (ntable)tbls.size(); n++) {
+			// Undefined facts are those which are neither true nor false
+			undefineds[n] = htrue % (trues[n] || falses[n]);
+		}
+		// Print out the true points separately
+		os << "true points:" << endl;
+		bool exists_trues = false;
+		for(ntable n = 0; n < (ntable)tbls.size(); n++) {
+			decompress(trues[n], n, [&os, &exists_trues, this](const term& r) {
+				os << to_raw_term(r) << '.' << endl;
+				exists_trues = true; });
+		}
+		if(!exists_trues) os << "(none)" << std::endl;
+
+		// Finally print out the undefined points separately
+		os << endl << "undefined points:" << endl;
+		bool exists_undefineds = false;
+		for(ntable n = 0; n < (ntable)tbls.size(); n++) {
+			decompress(undefineds[n], n, [&os, &exists_undefineds, this](const term& r) {
+				os << to_raw_term(r) << '.' << endl;
+				exists_undefineds = true; });
+		}
+		if(!exists_undefineds) os << "(none)" << std::endl;
+		return true;
+	} else if(fronts.back() == fronts[fronts.size() - 2]) {
+		// If FO(PFP) semantics are in effect and the last two fronts are
+		// equal then print them; this is the fixpoint.
+		level &l = fronts.back();
+		for(ntable n = 0; n < (ntable)tbls.size(); n++) {
+			if (!tbls[n].internal)
+				decompress(l[n], n, [&os, this](const term& r) {
+					os << to_raw_term(r) << '.' << endl; });
+		}
+		return true;
+	} else {
+		// If FO(PFP) semantics are in effect and two equal fronts are
+		// separated by an unequal front; then the fixpoint is empty.
+		return true;
+	}
+}
+
+template bool tables::out_fixpoint<char>(ostream& os);
+template bool tables::out_fixpoint<wchar_t>(wostream& os);
+
 void tables::out(const rt_printer& f) const {
 	for (ntable tab = 0; (size_t)tab != tbls.size(); ++tab)
-		out(tbls[tab].t, tab, f);
+		if (!tbls[tab].internal) out(tbls[tab].t, tab, f);
 }
 
 template <typename T>
 void tables::out(basic_ostream<T>& os, spbdd_handle x, ntable tab) const {
-	out(x, tab, [&os](const raw_term& rt) { os << rt << '.' << endl; });
+	if (!tbls[tab].internal) // don't print internal tables.
+		out(x, tab, [&os](const raw_term& rt) { os<<rt<<'.'<<endl; });
 }
 
 #ifdef __EMSCRIPTEN__
@@ -596,11 +677,11 @@ void tables::out(basic_ostream<T>& os, spbdd_handle x, ntable tab) const {
 // - set(relation_name, row, col, value) - sets value of the cell of a table
 void tables::out(emscripten::val o) const {
 	out([&o](const raw_term& t) {
-		string_t relation = lexeme2str(t.e[0].e);
+		string relation = to_string(lexeme2str(t.e[0].e));
 		int row = o.call<int>("length", relation);
 		int col = 0;
 		for (size_t ar = 0, n = 1; ar != t.arity.size();) {
-			stringstream es;
+			ostringstream es;
 			while (t.arity[ar] == -1) ++ar, es << '(';
 			if (n >= t.e.size()) break;
 			while (t.e[n].type == elem::OPENP) ++n;
@@ -626,7 +707,7 @@ void tables::decompress(spbdd_handle x, ntable tab, const cb_decompress& f,
 	size_t len, bool allowbltins) const {
 	table tbl = tbls.at(tab);
 	// D: bltins are special type of REL-s, mostly as any but no decompress.
-	if (!allowbltins && tbl.idbltin > -1) return;
+	if (!allowbltins && tbl.is_builtin()) return;
 	if (!len) len = tbl.len;
 	allsat_cb(x/*&&ts[tab].t*/, len * bits,
 		[tab, &f, len, this](const bools& p, int_t DBG(y)) {
@@ -655,13 +736,11 @@ set<term> tables::decompress() {
 
 elem tables::get_elem(int_t arg) const {
 	if (arg < 0) return elem(elem::VAR, get_var_lexeme(arg));
-	if (arg & 1) {
-		const char32_t ch = arg >> 2;
-		if (is_printable(ch)) return elem(ch);
-		return	elem(elem::SYM, rdict().get_lexeme("\"#" +
-			to_string_((int_t) ch) + "\""));
+	if( opts.bitunv == false) {
+		if (arg & 1) return elem((char32_t) (arg >> 2));
+		if (arg & 2) return elem((int_t) (arg >> 2));
 	}
-	if (arg & 2) return elem((int_t)(arg>>2));
+	else if(arg == 1 || arg == 0) return elem((bool)(arg));
 	return elem(elem::SYM, rdict().get_sym(arg));
 }
 
@@ -680,8 +759,7 @@ raw_term tables::to_raw_term(const term& r) const {
 		rt.e[1] = elem(elem::SYM, rdict().get_lexeme(r.neg ? "<=" : ">")),
 		rt.e[2] = get_elem(r[1]), rt.arity = {2}, rt.extype = raw_term::LEQ;
 		return rt;
-	// TODO: BLTINS: add term::BLTIN handling
-	} else if( r.tab == -1 && r.extype == term::ARITH ) {		
+	} else if( r.tab == -1 && r.extype == term::ARITH ) {
 			rt.e.resize(5);
 			elem elp;
 			elp.arith_op = r.arith_op;
@@ -704,6 +782,17 @@ raw_term tables::to_raw_term(const term& r) const {
 			rt.extype = raw_term::ARITH;
 			return rt;
 		}
+	else if (r.extype == term::BLTIN) {
+		args = r.size();
+		rt.e.resize(args + 1);
+		rt.e[0] = elem(elem::SYM,
+			dict.get_bltin(r.idbltin));
+		rt.e[0].num = r.renew << 1 | r.forget;
+		rt.arity = { (int_t) args };
+		for (size_t n = 1; n != args + 1; ++n)
+			rt.e[n] = get_elem(r[n - 1]);
+		rt.insert_parens(dict.op, dict.cl);
+	}
 	else {
 		args = tbls.at(r.tab).len, rt.e.resize(args + 1);
 		rt.e[0] = elem(elem::SYM,
@@ -714,6 +803,39 @@ raw_term tables::to_raw_term(const term& r) const {
 		rt.insert_parens(dict.op, dict.cl);
 	}
 	DBG(assert(args == r.size());)
+	if( opts.bitunv && typenv.contains_pred(lexeme2str(rt.e[0].e) )) {
+		const std::vector<typedecl> &vt = ((environment*)(&typenv))->lookup_pred(lexeme2str(rt.e[0].e) );
+		int_t bitsz = -1; 
+		int_t val;
+		int_t argc = 0;
+		for(typedecl td: vt ) {
+			if( td.is_primitive() ) {
+				bitsz =  td.pty.get_bitsz();
+				val = 0;
+				DBG(assert(rt.e.size() > (size_t)bitsz ));
+				for( int_t n = 0; n < bitsz; n++)
+						val |= rt.e[argc + n + 2].num << (bitsz-1 -n);
+				
+				rt.e.erase(rt.e.begin()+ 2 + argc, rt.e.begin() + 2 + argc + bitsz);
+				elem el;
+				if( td.pty.ty == primtype::UINT )
+					el = elem(val);
+				else if ( td.pty.ty == primtype::UCHAR ) 
+					el = elem((char_t) val);
+				else if ( td.pty.ty == primtype::SYMB )
+					el = elem(elem::SYM, this->dict.get_sym(val) );
+					
+				rt.e.insert(rt.e.begin() + 2 + argc, el);
+				argc++;
+			}
+			else ; //structtypes userdef
+		}
+		rt.calc_arity(nullptr);
+	}
+	else if( opts.bitunv) {
+		//infer types...
+	}
+	
 	return rt;
 }
 
@@ -749,11 +871,12 @@ uints tables::get_perm(const term& t, const varmap& m, size_t len) const {
 }
 
 template<typename T>
-varmap tables::get_varmap(const term& h, const T& b, size_t &varslen) {
+varmap tables::get_varmap(const term& h, const T& b, size_t &varslen, bool blt) {
 	varmap m;
 	varslen = h.size();
 	for (size_t n = 0; n != h.size(); ++n)
 		if (h[n] < 0 && !has(m, h[n])) m.emplace(h[n], n);
+	if (blt) return m;
 	for (const term& t : b)
 		for (size_t n = 0; n != t.size(); ++n)
 			if (t[n] < 0 && !has(m, t[n]))
@@ -767,18 +890,16 @@ spbdd_handle tables::get_alt_range(const term& h, const term_set& a,
 	vector<const term*> eqterms, leqterms, arithterms;
 	// first pass, just enlist eq terms (that have at least one var)
 	for (const term& t : a) {
-		bool haseq = false, hasleq = false, hasarith = false;
+		bool haseq = false, hasleq = false;
 		for (size_t n = 0; n != t.size(); ++n)
 			if (t[n] >= 0) continue;
 			else if (t.extype == term::EQ) haseq = true; // .iseq
 			else if (t.extype == term::LEQ) hasleq = true; // .isleq
-			else if (t.extype == term::ARITH) hasarith= true; // .isarith
 			else (t.neg ? nvars : pvars).insert(t[n]);
 		// TODO: BLTINS: add term::BLTIN handling
 		// only if iseq and has at least one var
 		if (haseq) eqterms.push_back(&t);
 		else if (hasleq) leqterms.push_back(&t);
-		else if (hasarith) arithterms.push_back(&t);
 	}
 	for (const term* pt : eqterms) {
 		const term& t = *pt;
@@ -831,19 +952,6 @@ spbdd_handle tables::get_alt_range(const term& h, const term_set& a,
 			leqvars.insert(v1);
 	}
 
-	//XXX: arith support - Work in progress
-	for (const term* pt : arithterms) {
-		const term& t = *pt;
-		assert(t.size() >= 3);
-		const int_t v1 = t[0], v2 = t[1], v3 = t[2];
-		if (v1 < 0 && !has(nvars, v1) && !has(pvars, v1))
-			arithvars.insert(v1);
-		if (v2 < 0 && !has(nvars, v2) && !has(pvars, v2))
-			arithvars.insert(v2);
-		if (v3 < 0 && !has(nvars, v3) && !has(pvars, v3))
-			arithvars.insert(v3);
-	}
-
 	for (int_t i : pvars) nvars.erase(i);
 	if (h.neg) for (int_t i : h) if (i < 0)
 		nvars.erase(i), eqvars.erase(i), leqvars.erase(i); // arithvars.erase(i);
@@ -851,7 +959,6 @@ spbdd_handle tables::get_alt_range(const term& h, const term_set& a,
 	for (int_t i : nvars) range(vm.at(i), len, v);
 	for (int_t i : eqvars) range(vm.at(i), len, v);
 	for (int_t i : leqvars) range(vm.at(i), len, v);
-	for (int_t i : arithvars) range(vm.at(i), len, v);
 	if (!h.neg) {
 		set<int_t> hvars;
 		for (int_t i : h) if (i < 0) hvars.insert(i);
@@ -886,28 +993,32 @@ body tables::get_body(const term& t, const varmap& vm, size_t len) const {
 	return b;
 }
 
-void tables::get_facts(const flat_prog& m) {
+bool tables::get_facts(const flat_prog& m) {
 	map<ntable, set<spbdd_handle>> add, del;
 	for (const auto& r : m)
 		if (r.size() != 1) continue;
 		else if (r[0].goal) goals.insert(r[0]);
+		else if (r[0].is_builtin()) fact_builtin(r[0]);
 		else (r[0].neg ? del : add)[r[0].tab].insert(from_fact(r[0]));
+	if (unsat || halt) return false;
 	clock_t start{}, end;
-	if (optimize) measure_time_start();
+	if (opts.optimize) measure_time_start();
 	bdd_handles v;
 	for (auto x : add) for (auto y : x.second)
 		tbls[x.first].t = tbls[x.first].t || y;
-	for (auto x : del) for (auto y : x.second)
-		tbls[x.first].t = tbls[x.first].t % y;
-	if (optimize)
+	for (auto x : del) {
+		for (auto y : x.second) tbls[x.first].t = tbls[x.first].t % y;
+	}
+	if (opts.optimize)
 		(o::ms() << "# get_facts: "),
 		measure_time_end();
+	return true;
 }
 
 void tables::get_nums(const raw_term& t) {
 	for (const elem& e : t.e)
 		if (e.type == elem::NUM) nums = max(nums, e.num);
-		else if (e.type == elem::CHR) chars = 255;
+		else if (e.type == elem::CHR) chars = max(chars, (int_t)e.ch);
 }
 
 bool tables::to_pnf(form *&froot) {
@@ -944,23 +1055,30 @@ flat_prog tables::to_terms(const raw_prog& p) {
 					for (const raw_term& z : y) // term_set(
 						v.push_back(from_raw_term(z, false, i++)),
 						get_nums(z);
-					align_vars(v), m.insert(move(v));
+					align_vars(v);
+					if (!m.insert(move(v)).second) v.clear();
 				}
 			}
 		}
 		else if(r.prft != NULL) {
 			bool is_sol = false;
 			form* froot = 0;
-
-			raw_form_tree *root = // r.prft.get();
-				r.prft->neg ? new raw_form_tree(
-						elem::NOT, NULL, NULL,
-						r.prft.get())
-					: r.prft.get();
+			sprawformtree root = r.prft->neg // neg transform
+				? std::make_shared<raw_form_tree>(elem::NOT, nullptr, nullptr,
+					r.prft)
+				: r.prft;
+			if (r.prft->guard_lx != lexeme{ 0, 0 }) { // guard transform
+				raw_term gt;
+				gt.arity = { 0 };
+				gt.e.emplace_back(elem::SYM, r.prft->guard_lx);
+				root = std::make_shared<raw_form_tree>(elem::AND,
+					nullptr, nullptr, root,
+					std::make_shared<raw_form_tree>(elem::NONE,
+						&gt));
+			}
 			from_raw_form(root, froot, is_sol);
 
 			/*
-
 			DBG(COUT << "\n ........... \n";)
 			DBG(r.prft.get()->printTree();)
 			DBG(COUT << "\n ........... \n";)
@@ -994,10 +1112,12 @@ flat_prog tables::to_terms(const raw_prog& p) {
 	return m;
 }
 
-int_t freeze(vector<term>& v, int_t m = 0) {
+int_t tables::freeze(vector<term>& v, int_t m = 0) {
 	map<int_t, int_t> p;
 	map<int_t, int_t>::const_iterator it;
-	for (const term& t : v) for (int_t i : t) if (i & 2) m = max(m, i >> 2);
+	for (const term& t : v) for (int_t i : t) 
+		if (opts.bitunv && (i ==0 || i == 1 )) m = max(m, i);
+		else if (i & 2) m = max(m, i >> 2);
 	for (term& t : v)
 		for (int_t& i : t)
 			if (i >= 0) continue;
@@ -1026,18 +1146,19 @@ cqc_res maybe_contains(const vector<term>& x, const vector<term>& y) {
 	return maybe_contained ? BOTH : CONTAINS;
 }
 
-flat_prog& get_canonical_db(vector<term>& x, flat_prog& p) {
+flat_prog& tables::get_canonical_db(vector<term>& x, flat_prog& p) {
 	freeze(x);
 	for (size_t n = 1; n != x.size(); ++n) p.insert({x[n]});
 	return p;
 }
 
-flat_prog& get_canonical_db(vector<vector<term>>& x, flat_prog& p) {
+flat_prog& tables::get_canonical_db(vector<vector<term>>& x, flat_prog& p) {
 	int_t m = 0;
 	for (vector<term>& v : x)
 		for (const term& t : v)
 			for (int_t i : t)
-				if (i & 2) m = max(m, i >> 2);
+				if (opts.bitunv && (i == 1 || i == 0) ) m = max(m, i);
+				else if (i & 2) m = max(m, i >> 2);
 	for (vector<term>& t : x) {
 		freeze(t, m);
 		for (size_t n = 1; n != t.size(); ++n) p.insert({t[n]});
@@ -1047,7 +1168,9 @@ flat_prog& get_canonical_db(vector<vector<term>>& x, flat_prog& p) {
 
 void tables::run_internal_prog(flat_prog p, set<term>& r, size_t nsteps) {
 	dict_t tmpdict(dict); // copy ctor, only here, if this's needed at all?
-	tables t(move(tmpdict), false, false, true);
+	tables::options to;
+	to.bin_transform = true;
+	tables t(move(tmpdict), to);
 	//t.dict = dict;
 	t.bcqc = false, t.chars = chars, t.nums = nums;
 	if (!t.run_nums(move(p), r, nsteps)) { DBGFAIL; }
@@ -1240,19 +1363,15 @@ bool tables::handler_leq(const term& t, const varmap& vm, const size_t vl,
 	return true;
 }
 
-
-
-void tables::get_alt(const term_set& al, const term& h, set<alt>& as) {
+void tables::get_alt(const term_set& al, const term& h, set<alt>& as, bool blt){
 	alt a;
-	set<int_t> vs;
 	set<pair<body, term>> b;
 	spbdd_handle leq = htrue, q;
-	pair<body, term> lastbody;
-	a.vm = get_varmap(h, al, a.varslen), a.inv = varmap_inv(a.vm);
+	a.vm = get_varmap(h, al, a.varslen, blt), a.inv = varmap_inv(a.vm);
 
 	for (const term& t : al) {
 		if (t.extype == term::REL) {
-			b.insert(lastbody = { get_body(t, a.vm, a.varslen), t });
+			b.insert({ get_body(t, a.vm, a.varslen), t });
 		} else if (t.extype == term::EQ) {
 			if (!handler_eq(t, a.vm, a.varslen, a.eq)) return;
 		} else if (t.extype == term::LEQ) {
@@ -1260,21 +1379,27 @@ void tables::get_alt(const term_set& al, const term& h, set<alt>& as) {
 		} else if (t.extype == term::ARITH) {
 			//arith constraint on leq
 			if (!handler_arith(t,a.vm, a.varslen, leq)) return;
-		} else if (t.extype == term::BLTIN) {
-			//DBG(assert(t.size() >= 2);); // ?v, + could have many vars
-			// TODO: check that last body exists, but should always be present.
-			DBG(assert(lastbody.second.size() > 0););
-			DBG(assert(t.idbltin >= 0););
-			a.idbltin = t.idbltin; // store just a dict id, fetch type on spot
-			a.bltinargs = t;
-			// TODO: check that vars match - in number and names too?
-			// this is only relevant for 'count'? use size differently per type
-			term& bt = lastbody.second;
-			a.bltinsize = count_if(bt.begin(), bt.end(),
-				[](int i) { return i < 0; });
+		} else if (!blt && t.extype == term::BLTIN) {
+			bltins.at(t.idbltin).body.getvars(t,
+				a.bltinvars, a.bltngvars, a.bltoutvars);
+			a.bltins.push_back(t);
 		}
 	}
-
+	if (a.bltinvars.size()) { // get grnd
+		ints args;
+		for (auto v : a.bltinvars) args.push_back(v);
+		const term bt(false, -1, args, 0, -1);
+		set<alt> as;
+		get_alt(al, bt, as, true);
+		assert(as.size() == 1);
+		for (alt x : as) *(a.grnd = new alt) = x;
+		// TODO grnd alt sharing?
+		//set<alt*, ptrcmp<alt>>::const_iterator ait;
+		//	if ((ait = grnds.find(&x)) != grnds.end())
+		//		a.grnd = *ait;
+		//	else	*(a.grnd = new alt) = x,
+		//		grnds.insert(a.grnd);
+	}
 	a.rng = bdd_and_many({ get_alt_range(h, al, a.vm, a.varslen), leq });
 	static set<body*, ptrcmp<body>>::const_iterator bit;
 	body* y;
@@ -1283,6 +1408,10 @@ void tables::get_alt(const term_set& al, const term& h, set<alt>& as) {
 		if ((bit=bodies.find(&x.first)) != bodies.end())
 			a.push_back(*bit);
 		else *(y=new body) = x.first, a.push_back(y), bodies.insert(y);
+		// collect bodies for builtins. these arn't grounded
+		if (y) for (size_t n = 0; n != x.second.size(); ++n)
+			if (x.second[n] < 0 && has(a.bltngvars, x.second[n]))
+				a.varbodies.insert({ x.second[n], a.back() });
 	}
 	auto d = deltail(a.varslen, h.size());
 	a.ex = d.first, a.perm = d.second, as.insert(a);
@@ -1398,8 +1527,8 @@ void tables::transform_bin(flat_prog& p) {
 		}
 		p.insert(move(x)), vars.clear();
 	}
-	if (print_transformed) print(o::to("transformed")
-		<< "after transform_bin:" << endl, p);
+	if (opts.print_transformed) print(o::to("transformed")
+		<< "# after transform_bin:" << endl, p);
 }
 
 /*struct cqcdata {
@@ -1461,9 +1590,9 @@ void tables::get_form(const term_set& al, const term& h, set<alt>& as) {
 	return;
 }
 
-void tables::get_rules(flat_prog p) {
+bool tables::get_rules(flat_prog p) {
 	bcqc = false;
-	get_facts(p);
+	if (!get_facts(p)) return false;
 	/*
 	//XXX: OK to remove?
 	for (const vector<term>& x : p)
@@ -1478,7 +1607,7 @@ void tables::get_rules(flat_prog p) {
 	if (bcqc) print(o::out()<<"after cqc before tbin, "
 		<<p.size()<<" rules."<<endl, p);
 #ifndef TRANSFORM_BIN_DRIVER
-	if (bin_transform) transform_bin(p);
+	if (opts.bin_transform) transform_bin(p);
 #endif
 	if (bcqc) print(o::out()<<"before cqc after tbin, "
 		<<p.size()<< " rules."<<endl, p);
@@ -1487,7 +1616,7 @@ void tables::get_rules(flat_prog p) {
 	replace_rel(move(r), p), set_priorities(p);
 	if (bcqc) print(o::out()<<"after cqc, "
 		<<p.size()<< " rules."<<endl, p);
-	if (optimize) bdd::gc();
+	if (opts.optimize) bdd::gc();
 
 	// BLTINS: set order is important (and wrong) for e.g. REL, BLTIN, EQ
 	map<term, set<term_set>> m;
@@ -1504,7 +1633,7 @@ void tables::get_rules(flat_prog p) {
 		const term &t = x.first;
 		rule r;
 		if (t.neg) datalog = false;
-		tbls[t.tab].ext = false;
+		//tbls[t.tab].ext = false;
 		varmap v;
 		r.neg = t.neg, r.tab = t.tab, r.eq = htrue, r.t = t; //XXX: review why we replicate t variables in r
 		for (size_t n = 0; n != t.size(); ++n)
@@ -1526,12 +1655,14 @@ void tables::get_rules(flat_prog p) {
 				r.push_back(*ait);
 			else	*(aa = new alt) = x,
 				r.push_back(aa), alts.insert(aa);
+
 		rs.insert(r);
 	}
 	for (rule r : rs)
 		tbls[r.t.tab].r.push_back(rules.size()), rules.push_back(r);
 	sort(rules.begin(), rules.end(), [this](const rule& x, const rule& y) {
 			return tbls[x.tab].priority > tbls[y.tab].priority; });
+	return true;
 }
 
 struct unary_string{
@@ -1576,9 +1707,9 @@ struct unary_string{
 	}
 };
 void tables::load_string(lexeme r, const string_t& s) {
-	
+
 	unary_string us(sizeof(char32_t)*8);
-	us.buildfrom(s);	
+	us.buildfrom(s);
 	//DBG(us.toprint(o::dbg()));
 	for( auto it: us.rel ){
 		int_t r = dict.get_rel(rdict().get_lexeme(us.getrelin_str(it.first)));
@@ -1588,7 +1719,7 @@ void tables::load_string(lexeme r, const string_t& s) {
 		bdd_handles b;
 		b.reserve(it.second.size());
 		for( int_t i :it.second)
-			t[0]= mknum(i), b.push_back(from_fact(t));	
+			t[0]= mknum(i), b.push_back(from_fact(t));
 		tbls[tb].t = bdd_or_many(b);
 	}
 
@@ -1606,6 +1737,7 @@ void tables::load_string(lexeme r, const string_t& s) {
 	b1.reserve(s.size()), b2.reserve(s.size()), t.resize(2), tb.resize(3);
 	for (int_t n = 0; n != (int_t)s.size(); ++n) {
 		t[0] = mknum(n), t[1] = mkchr(s[n]), // t[2] = mknum(n + 1),
+		chars = max(chars, t[1]),
 		b1.push_back(from_fact(t));
 		tb[1] = t[0], tb[2] = mknum(0);
 		if (isspace(s[n])) tb[0] = sspace, b2.push_back(from_fact(tb));
@@ -1615,15 +1747,15 @@ void tables::load_string(lexeme r, const string_t& s) {
 		if (isprint(s[n])) tb[0] = sprint, b2.push_back(from_fact(tb));
 	}
 	clock_t start{}, end;
-	if (optimize)
+	if (opts.optimize)
 		(o::ms()<<"# load_string or_many: "),
 		measure_time_start();
 	ntable st = get_table({rel, {2}}); // str(pos char)
 	ntable stb = get_table({rel, {3}}); // str(printable pos 0)
-	
+
 	tbls[st].t = bdd_or_many(move(b1));
 	tbls[stb].t = bdd_or_many(move(b2));
-	if (optimize) measure_time_end();
+	if (opts.optimize) measure_time_end();
 }
 
 /*template<typename T> bool subset(const set<T>& small, const set<T>& big) {
@@ -1650,7 +1782,7 @@ ntable tables::get_table(const sig& s) {
 		tbls.push_back(tb), smap.emplace(s,nt), nt;
 }
 
-term to_nums(term t) {
+term tables::to_nums(term t) {
 	for (int_t& i : t)  if (i > 0) i = mknum(i);
 	return t;
 }
@@ -1660,7 +1792,7 @@ term to_nums(term t) {
 //	return t;
 //}
 
-vector<term> to_nums(const vector<term>& v) {
+vector<term> tables::to_nums(const vector<term>& v) {
 	vector<term> r;
 	for (const term& t : v) r.push_back(to_nums(t));
 	return r;
@@ -1672,7 +1804,7 @@ vector<term> to_nums(const vector<term>& v) {
 //	return ss;
 //}
 
-void to_nums(flat_prog& m) {
+void tables::to_nums(flat_prog& m) {
 	flat_prog mm;
 	for (auto x : m) mm.insert(to_nums(x));
 	m = move(mm);
@@ -1689,29 +1821,29 @@ bool tables::get_substr_equality(const raw_term &rt, size_t &n,
 	int_t relp = dict.get_rel(dict.get_lexeme("equals"));
 	svalt.tab = get_table({relp, {(int_t)svalt.size()}});
 	svalt.extype = term::textype::REL;
-				
+
 	for( int i=0; i<2 ; i++) {
-		if( n >= rt.e.size() || rt.e[n].type != elem::SYM ) 
+		if( n >= rt.e.size() || rt.e[n].type != elem::SYM )
 			return false;
 		string_t attrib = lexeme2str(rt.e[n].e);
 		if( !(!strcmp(attrib.c_str(), "substr")
-			&& 	(n+3) < rt.e.size() 
-			&& 	rt.e[n+1].type == elem::OPENP  
-			&&	rt.e[n+2].type == elem::NUM    
-			&&	rt.e[n+3].type == elem::CLOSEP ) ) 
+			&& 	(n+3) < rt.e.size()
+			&& 	rt.e[n+1].type == elem::OPENP
+			&&	rt.e[n+2].type == elem::NUM
+			&&	rt.e[n+3].type == elem::CLOSEP ) )
 			return false;
-		
+
 		int_t pos =  rt.e[n+2].num;
-		if( pos < 1 || pos >= (int_t)refs.size()) 
+		if( pos < 1 || pos >= (int_t)refs.size())
 			parse_error("Wrong symbol index in substr", rt.e[n+2].e );
 
-		
+
 		if( refs[pos].size()) svalt[i*2] = refs[pos][0];
-		// normal S( ?i ?j ) term, but for binary str(?i a) relation, 
+		// normal S( ?i ?j ) term, but for binary str(?i a) relation,
 		// get the var by decrementing that at pos0
 		//IMPROVE: Following code needs to aware of bitsz of unary string.
-		//Currently, it assume whole char (32 bits) as a relation.	
-		if( refs[pos].size()==2) 
+		//Currently, it assume whole char (32 bits) as a relation.
+		if( refs[pos].size()==2)
 			svalt[i*2+1] = refs[pos][1] >= 0 ? refs[pos][0]-1 : refs[pos][1];
 		else if ( refs[pos].size()==1) // for unary str
 			svalt[i*2+1] = refs[pos][0]-1;
@@ -1719,51 +1851,51 @@ bool tables::get_substr_equality(const raw_term &rt, size_t &n,
 			parse_error("Incorrect term size for substr(index)");
 
 		n += 4;  // parse sval(i)
-		if( i == 0 && !( n < rt.e.size() &&  
+		if( i == 0 && !( n < rt.e.size() &&
 			(rt.e[n].type == elem::EQ || rt.e[n].type == elem::LEQ)))
 			parse_error("Missing operator", rt.e[n].e );
 		else if( i == 1 && n < rt.e.size())
 			parse_error("Incorrect syntax", rt.e[n].e );
-		else n++; //parse operator	
+		else n++; //parse operator
 	}
 	v.push_back(move(svalt));
 	return true;
 }
 
-int_t tables::get_factor(raw_term &rt, size_t &n, std::map<size_t, term> &refs, 
+int_t tables::get_factor(raw_term &rt, size_t &n, std::map<size_t, term> &refs,
 							std::vector<term> &v, std::set<term> &/*done*/){
 
 	int_t lopd=0;
 	if( n < rt.e.size() && rt.e[n].type == elem::SYM ) {
 		string_t attrib = lexeme2str(rt.e[n].e);
-		if( ! strcmp(attrib.c_str() , "len") 
-			&& 	(n+3) < rt.e.size() 
-			&& 	rt.e[n+1].type == elem::OPENP  
-			&&	rt.e[n+2].type == elem::NUM    
+		if( ! strcmp(attrib.c_str() , "len")
+			&& 	(n+3) < rt.e.size()
+			&& 	rt.e[n+1].type == elem::OPENP
+			&&	rt.e[n+2].type == elem::NUM
 			&&	rt.e[n+3].type == elem::CLOSEP ) {
 				int_t pos =  rt.e[n+2].num;
-				if( pos <0 || pos >= (int_t)refs.size()) 
+				if( pos <0 || pos >= (int_t)refs.size())
 					parse_error("Wrong symbol index in len", rt.e[n+2].e );
 
 				if( refs[pos].size() > 1 ) {
-					
+
 					term lent;
-					lent.resize(3), lent.tab = -1 , 
+					lent.resize(3), lent.tab = -1 ,
 					lent.extype = term::textype::ARITH ,lent.arith_op = t_arith_op::ADD;
 
 					lent[0] = refs[pos][0];
 					if( refs[pos][1] < 0 )	lent[2] = refs[pos][1];
-					else lent[2] = refs[pos][0] -1; // so len(i) refers to str relation 
+					else lent[2] = refs[pos][0] -1; // so len(i) refers to str relation
 
 					lent[1] = dict.get_var(dict.get_lexeme(string("?len")+to_string_(pos)));
-					lopd = lent[1];	
+					lopd = lent[1];
 					n += 4;
 					//if(!done.insert(lent).second)
 					v.push_back(lent);
 				}
 				else er("Wrong term for ref.");
 			}
-	} 
+	}
 	else if( n < rt.e.size() && rt.e[n].type == elem::NUM ) {
 			lopd = mknum(rt.e[n].num);
 			n += 1;
@@ -1782,27 +1914,27 @@ bool tables::get_rule_substr_equality(vector<vector<term>> &eqr ){
 		int_t i= --var, j= --var , k=--var, n= --var;
 		ntable nt = get_table({dict.get_rel(dict.get_lexeme("equals")), {4}});
 		// making head   equals( i j k n) :-
-		eqr[r].emplace_back(false, term::textype::REL, t_arith_op::NOP, nt, 
+		eqr[r].emplace_back(false, term::textype::REL, t_arith_op::NOP, nt,
 								std::initializer_list<int>{i, j, k, n}, 0 );
 		// making fact equals( i i k k).
 		if( r == 0 ) eqr[r].back().assign({i,i,k,k});
 		else if( r == 1 ) { // inductive case
 			// equals(i j k n ) ;- str(i cv), str(k cv), i + 1 = j, k +1 = n.
 			int_t cv = --var;
-			// str(i cv) ,str( k, cv)	
+			// str(i cv) ,str( k, cv)
 			for( int vi=0; vi<2; vi++)
 				eqr[r].emplace_back(false, term::textype::REL, t_arith_op::NOP,
 									get_table({*str_rels.begin(),{2}}),
 									std::initializer_list<int>{eqr[r][0][2*vi], cv} , 0);
 
 			eqr[r].emplace_back( false, term::ARITH, t_arith_op::ADD, -1,
-								 std::initializer_list<int>{i, mknum(1), j}, 0); 			
+								 std::initializer_list<int>{i, mknum(1), j}, 0);
 			eqr[r].emplace_back( eqr[r].back());
 			eqr[r].back()[0] = k, eqr[r].back()[2] = n ;
-		} 
+		}
 		else if( r == 2) { // inductive case.
 			//equals(i j k n ) :- equals( i x k y)	, equals( x j y n)
-			int_t x = --var, y = --var;								
+			int_t x = --var, y = --var;
 			term eqs(false, term::textype::REL, t_arith_op::NOP, nt, { i, x, k, y }, 0);
 			eqr[r].emplace_back(eqs);
 			eqs.assign({x, j, y, n});
@@ -1815,7 +1947,7 @@ bool tables::get_rule_substr_equality(vector<vector<term>> &eqr ){
 
 
 
-bool ptransformer::parse_alt( vector<elem> &next, size_t& cur){	
+bool ptransformer::parse_alt( vector<elem> &next, size_t& cur){
 	bool ret = false;
 	//size_t cur1 = cur;
 	while( cur < next.size() && is_firstoffactor(next[cur])){
@@ -1852,13 +1984,13 @@ lexeme ptransformer::get_fresh_nonterminal(){
 	return d.get_lexeme(fnt);
 }
 
-bool ptransformer::synth_recur( vector<elem>::const_iterator from, 
+bool ptransformer::synth_recur( vector<elem>::const_iterator from,
 		vector<elem>::const_iterator till, bool bnull = true, bool brecur =true,
 		bool balt= true ){
-	
-	if(brecur ) { 
+
+	if(brecur ) {
 		bool binsidealt =false; // for | to be present inside
-		for( vector<elem>::const_iterator f = from; f!=till; f++) 
+		for( vector<elem>::const_iterator f = from; f!=till; f++)
 			if(f->type == elem::ALT) {binsidealt =true; break;}
 		if(binsidealt) {
 			synth_recur( from, till, false, false, false);
@@ -1868,9 +2000,9 @@ bool ptransformer::synth_recur( vector<elem>::const_iterator from,
 	}
 	lp.emplace_back();
 	production &np = lp.back();
-	elem sym = elem(elem::SYM,  get_fresh_nonterminal());   
-	np.p.push_back( sym);	
-	np.p.insert(np.p.end(), from , till);	
+	elem sym = elem(elem::SYM,  get_fresh_nonterminal());
+	np.p.push_back( sym);
+	np.p.insert(np.p.end(), from , till);
 	if(brecur) np.p.push_back( sym);
 	elem alte = elem(elem::ALT, d.get_lexeme( "|" ) );
 	if(balt) np.p.emplace_back(alte);
@@ -1888,71 +2020,71 @@ bool ptransformer::parse_factor( vector<elem> &next, size_t& cur){
 		size_t start = cur;
 		++cur;
 		if( next.size() > cur 				&&
-			next[cur].type == elem::ARITH 	&& 
+			next[cur].type == elem::ARITH 	&&
 			(next[cur].arith_op == MULT 	||
-				next[cur].arith_op == ADD		)) {  
-		
+				next[cur].arith_op == ADD		)) {
+
 			//lp.emplace_back(),
 			synth_recur( next.begin()+start, next.begin()+cur,
 			next[cur].arith_op == MULT),
 			++cur;
 			next.erase( next.begin()+start, next.begin()+cur);
 			next.insert( next.begin()+start, lp.back().p[0]);
-			return cur = start+1, true; 
+			return cur = start+1, true;
 		}
-		return true;	
-	}		
+		return true;
+	}
 	if( next[cur].type == elem::OPENSB ) {
 		size_t start = cur;
 		++cur;
 		if( !parse_alts(next, cur)) return cur = cur1, false;
-		if(next[cur].type != elem::CLOSESB) return false;			
+		if(next[cur].type != elem::CLOSESB) return false;
 		++cur;
 		//lp.emplace_back();
 		synth_recur( next.begin()+start+1, next.begin()+cur-1, true, false);
 		next.erase( next.begin()+start, next.begin()+cur);
 		next.insert( next.begin()+start, lp.back().p[0]);
-		return cur = start+1, true; 
+		return cur = start+1, true;
 	}
 	else if( next[cur].type == elem::OPENP ) {
 		size_t start = cur;
 		++cur;
 		if( !parse_alts(next, cur)) return cur = cur1, false;
-		if(next[cur].type != elem::CLOSEP) return false;			
+		if(next[cur].type != elem::CLOSEP) return false;
 		++cur;
 		//lp.emplace_back();
-		if(next[cur].type == elem::ARITH && 
+		if(next[cur].type == elem::ARITH &&
 			(next[cur].arith_op == MULT 	||
-			next[cur].arith_op == ADD		)) 
+			next[cur].arith_op == ADD		))
 			// include brackets for correctness since it may contain alt
 			synth_recur( next.begin()+start+1, next.begin()+cur-1,
 			next[cur].arith_op == MULT),
-			++cur;			
+			++cur;
 		else //making R => ...
 			synth_recur( begin(next)+start+1, begin(next)+cur -1,
 			false, false, false);
 		next.erase( next.begin()+start, next.begin()+cur);
 		next.insert( next.begin()+start, this->lp.back().p[0]);
-		return cur = start+1, true; 
+		return cur = start+1, true;
 	}
 	else if( next[cur].type == elem::OPENB ) {
 		size_t start = cur;
 		++cur;
 		if( !parse_alts(next, cur)) return cur = cur1, false;
-		if(next[cur].type != elem::CLOSEB) return false;			
+		if(next[cur].type != elem::CLOSEB) return false;
 		++cur;
 		//lp.emplace_back();
-		// making R => ... R | null 
+		// making R => ... R | null
 		synth_recur( next.begin()+start+1, next.begin()+cur -1);
 		next.erase( next.begin()+start, next.begin()+cur);
 		next.insert( next.begin()+start, lp.back().p[0]);
-		return cur = start+1, true; 
+		return cur = start+1, true;
 	}
 	else return cur = cur1, false;
 }
 
 bool ptransformer::visit() {
-	size_t cur = 1;		
+	size_t cur = 1;
 	//DBG(COUT<<endl<<p<<endl);
 	bool ret = this->parse_alts( this->p.p, cur);
 	if( this->p.p.size() > cur ) ret = false;
@@ -1963,7 +2095,7 @@ bool ptransformer::visit() {
 	if(!ret) parse_error("Error Production",
 		cur < this->p.p.size() ? p.p[cur].e : p.p[0].e );
 	return ret;
-	
+
 }
 
 bool tables::transform_ebnf(vector<production> &g, dict_t &d, bool &changed){
@@ -1972,7 +2104,7 @@ bool tables::transform_ebnf(vector<production> &g, dict_t &d, bool &changed){
 	for (size_t k = 0; k != g.size();k++) {
 		ptransformer pt(g[k], d);
 		if(!pt.visit()) return ret = false;
-		g.insert( g.end(), pt.lp.begin(), pt.lp.end() ), 
+		g.insert( g.end(), pt.lp.begin(), pt.lp.end() ),
 		changed |= pt.lp.size()>0;
 	}
 	return ret;
@@ -1981,9 +2113,9 @@ bool tables::transform_ebnf(vector<production> &g, dict_t &d, bool &changed){
 graphgrammar::graphgrammar(vector<production> &t, dict_t &_d): dict(_d) {
 	for(production &p: t)
 		if (p.p.size() < 2) parse_error(err_empty_prod, p.p[0].e);
-		else _g.insert({p.p[0],std::make_pair(p, NONE)});	
+		else _g.insert({p.p[0],std::make_pair(p, NONE)});
 }
-	
+
 bool graphgrammar::dfs( const elem &s) {
 
 	// get all occurrences of s and markin progress
@@ -1998,12 +2130,12 @@ bool graphgrammar::dfs( const elem &s) {
 				for( auto nit = nang.first; nit != nang.second; nit++)
 					if( nit->second.second == PROGRESS ) return true;
 					else if( nit->second.second != VISITED)
-						if(  dfs(*nxt)) return true;											
+						if(  dfs(*nxt)) return true;
 			//	for( auto nit = nang.first; nit != nang.second; nit++)
 			//		nit->second.second = VISITED;
-			//	sort.push_back(*nxt);			
+			//	sort.push_back(*nxt);
 			}
-		}	
+		}
 	for( auto sgit = rang.first; sgit != rang.second; sgit++)
 		sgit->second.second = VISITED;
 	sort.push_back(s);
@@ -2026,10 +2158,10 @@ bool graphgrammar::iscyclic( const elem &s) {
 }
 const std::map<lexeme,string,lexcmp>& graphgrammar::get_builtin_reg() {
 	static const map<lexeme,string,lexcmp> b =
-		  { {dict.get_lexeme("alpha"), "[a-zA-Z]"}, 
+		  { {dict.get_lexeme("alpha"), "[a-zA-Z]"},
 		  {dict.get_lexeme("alnum"), "[a-zA-Z0-9]"},
 		  {dict.get_lexeme("digit"), "[0-9]" },
-		  {dict.get_lexeme("space"),  "[\\s]" },  
+		  {dict.get_lexeme("space"),  "[\\s]" },
 		  {dict.get_lexeme("printable") , "[\\x20-\\x7F]"}
 		};
 		return b;
@@ -2042,29 +2174,29 @@ std::string graphgrammar::get_regularexpstr(const elem &p, bool &bhasnull, bool 
 						U')',U'[', U']', U'{', U'}', U'|', U'\\'};
 	static const string quantrep = "+*?}";
 
-	static const map<lexeme,string,lexcmp> &b = get_builtin_reg();  
+	static const map<lexeme,string,lexcmp> &b = get_builtin_reg();
 	combine_rhs(p, comb);
 	std::string ret;
 	for(const elem &e: comb ) {
 		if( e.type == elem::SYM && (e.e == "null") )
-			bhasnull = true, ret.append("^$");  
+			bhasnull = true, ret.append("^$");
 		else if( b.find(e.e) != b.end())
-			ret.append(b.at(e.e));		
+			ret.append(b.at(e.e));
 		else if (e.type == elem::CHR) {
 				if(esc.find(e.ch) != esc.end())
-					  ret.append("\\");
+						ret.append("\\");
 			ret.append(e.to_str());
 		}
 		else {
 			ret.append(e.to_str());
-			if( dolazy && quantrep.find(ret.back()) != string::npos) 
-				ret.append("?");	
-				/* 
-				| *  -->  *?             
-				| +  -->  +?             
-				| {n} --> {n}?            
+			if( dolazy && quantrep.find(ret.back()) != string::npos)
+				ret.append("?");
+				/*
+				| *  -->  *?
+				| +  -->  +?
+				| {n} --> {n}?
 				*/
-				
+
 		}
 	}
 	return ret;
@@ -2079,7 +2211,7 @@ bool graphgrammar::combine_rhs( const elem &s, vector<elem> &comb) {
 		comb.insert(comb.end(), prodr.p.begin()+1, prodr.p.end());
 		DBG(assert(rit->second.second == VISITED));
 	}
-	return true;	
+	return true;
 }
 
 bool graphgrammar::collapsewith(){
@@ -2087,13 +2219,13 @@ bool graphgrammar::collapsewith(){
 		DBG(COUT<< it->second.second << ":" << it->second.first.to_str(0)<<endl);
 	}
 	if(sort.empty()) return false;
-	
+
 	static const map<lexeme,string,lexcmp> &b = get_builtin_reg();
 	for (elem &e: sort) {
 		DBG(COUT<<e<<endl;)
 		auto rang = _g.equal_range(e);
 		for( auto sit = rang.first; sit != rang.second; sit++){
-		
+
 			production &prodc = sit->second.first;
 			for( size_t i = 1 ; i < prodc.p.size(); i++) {
 				elem &r = prodc.p[i];
@@ -2104,22 +2236,23 @@ bool graphgrammar::collapsewith(){
 					comb.push_back(elem(elem::CLOSEP, dict.get_lexeme(")")));
 					comb.insert(comb.begin(),elem(elem::OPENP, dict.get_lexeme("(")));
 					prodc.p.erase(prodc.p.begin()+i);
-					prodc.p.insert(prodc.p.begin()+i, 
+					prodc.p.insert(prodc.p.begin()+i,
 						comb.begin(), comb.end());
-					i += comb.size() -2; 
+					i += comb.size() -2;
 				}
 			}
-		
+
 		}
 	}
 	return true;
 }
-bool tables::transform_grammar_constraints(const production &x, vector<term> &v, flat_prog &p, 
-											  std::map<size_t, term> &refs) {
+bool tables::transform_grammar_constraints(const production &x, vector<term> &v,
+	flat_prog &p, std::map<size_t, term> &refs)
+{
 	std::set<term> done;
 	bool beqrule = false;
 	for( raw_term rt : x.c ) {
-		
+
 		size_t n = 0;
 		if( get_substr_equality(rt, n, refs, v, done)) {
 			// lets add equality rule since substr(i) is being used
@@ -2127,7 +2260,7 @@ bool tables::transform_grammar_constraints(const production &x, vector<term> &v,
 				vector<vector<term>> eqr;
 				beqrule = get_rule_substr_equality(eqr);
 				for( auto vt: eqr) p.insert(vt);
-			} 
+			}
 			continue;
 		}
 		//every len constraint raw_term should be :
@@ -2135,19 +2268,19 @@ bool tables::transform_grammar_constraints(const production &x, vector<term> &v,
 		// e.g. len(1) + 2 = 5  | len(1) = len(2
 		n = 0;
 		int_t lopd = get_factor(rt, n, refs, v, done);
-		int_t ropd, oside;    
+		int_t ropd, oside;
 		if( n < rt.e.size() && rt.e[n].type == elem::ARITH ) {
-			// format : lopd + ropd = oside 
+			// format : lopd + ropd = oside
 			term aritht;
 			aritht.resize(3);
-			aritht.tab = -1; 
+			aritht.tab = -1;
 			aritht.extype = term::textype::ARITH;
 			aritht.arith_op = rt.e[n].arith_op;
 			n++; // operator
-			
+
 			int_t ropd = get_factor(rt, n, refs, v, done);
-			
-			if( rt.e[n].type != elem::EQ) 
+
+			if( rt.e[n].type != elem::EQ)
 				parse_error("Only EQ supported in len constraints. ", rt.e[n].e);
 			n++; // assignment
 
@@ -2159,45 +2292,45 @@ bool tables::transform_grammar_constraints(const production &x, vector<term> &v,
 			if(n == rt.e.size())	v.push_back(aritht);
 			else return er("Only simple binary operation allowed.");
 		}
-		else if( n < rt.e.size() && 
+		else if( n < rt.e.size() &&
 				(rt.e[n].type == elem::EQ || rt.e[n].type == elem::LEQ)) {
 			//format: lopd = ropd
 			term equalt;
 			equalt.resize(2);
-			equalt.extype = rt.e[n].type == elem::EQ ? 
+			equalt.extype = rt.e[n].type == elem::EQ ?
 							term::textype::EQ : term::textype::LEQ;
-			
-			equalt[0]= lopd; //TODO: switched order due to bug <= 
+
+			equalt[0]= lopd; //TODO: switched order due to bug <=
 			n++; //equal
 			ropd =  get_factor(rt, n, refs, v, done);
 			equalt[1] = ropd;
 
 			//if(!done.insert(equalt).second )
 			if(n == rt.e.size())	v.push_back(equalt);
-			else if( n < rt.e.size() 
+			else if( n < rt.e.size()
 					&& rt.e[n].type == elem::ARITH
 					&& equalt.extype == term::textype::EQ ) {
-				//format: lopd = ropd + oside 
-					
+				//format: lopd = ropd + oside
+
 					term aritht;
 					aritht.resize(3);
-					aritht.tab = -1; 
+					aritht.tab = -1;
 					aritht.extype = term::textype::ARITH;
 					aritht.arith_op = rt.e[n].arith_op;
 					n++; // operator
-					
+
 					oside = get_factor(rt, n, refs, v, done);
 					aritht[0] = ropd;
 					aritht[1] = oside;
 					aritht[2] = lopd;
-					
+
 					//if(!done.insert(aritht).second)
 					if(n == rt.e.size())	v.push_back(aritht);
 					else return er("Only simple binary operation allowed.");
-	
+
 			} else parse_error(err_constraint_syntax);
 		}
-		else parse_error(err_constraint_syntax, rt.e[n].e);		
+		else parse_error(err_constraint_syntax, rt.e[n].e);
 	}
 	return true;
 }
@@ -2217,6 +2350,7 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 				p.p.erase(p.p.begin() + n);
 				while ((chl = peek_codepoint(s, sl, ch)) > 0) {
 					sl -= chl; s += chl;
+					chars = max(chars, (int_t) ch);
 					if (ch == U'\\' && !esc) esc = true;
 					else p.p.insert(p.p.begin() + n++,
 						elem(ch)), esc = false;
@@ -2226,30 +2360,36 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 	int statterm=0;
 	set<elem> torem;
 	measure_time_start();
-	bool enable_regdetect_matching= apply_regexpmatch;	
-	if( strs.size() && enable_regdetect_matching) {	
+	bool enable_regdetect_matching = opts.apply_regexpmatch;
+	if (strs.size() && enable_regdetect_matching) {
 		string inputstr = to_string(strs.begin()->second);
-		DBG(COUT<<inputstr<<endl);		
+		DBG(COUT<<inputstr<<endl);
 		graphgrammar ggraph(g, dict);
 		ggraph.detectcycle();
 		ggraph.collapsewith();
-		for(auto &elem : ggraph.sort) {			
+		for(auto &elem : ggraph.sort) {
 			bool bnull =false;
 			string regexp = ggraph.get_regularexpstr(elem, bnull);
 			DBG(COUT<<"Trying"<<regexp<<"for "<< elem<<endl);
 			regex rgx;
+#ifdef WITH_EXCEPTIONS
 			try {
-			rgx = regexp;
+#else
+// TODO: check regexp's validity another way?
+#endif
+				rgx = regexp;
+#ifdef WITH_EXCEPTIONS
 			} catch( ... ) {
-			  DBG(COUT<<"Ignoring Invalid regular expression"<<regexp);
-			  continue;
+				DBG(COUT<<"Ignoring Invalid regular expression"<<regexp);
+				continue;
 			}
+#endif
 			smatch sm;
 			term t;
 			bool bmatch=false;
 			if(regex_level > 0) {
 				for( size_t i = 0; i <= inputstr.size(); i++)
-					for( size_t j = i; j <= inputstr.size(); j++)	{					
+					for( size_t j = i; j <= inputstr.size(); j++)	{
 						string ss = (i == inputstr.size()) ? "": inputstr.substr(i,j-i);
 						if( regex_match(ss, sm, rgx)) {
 							DBG(COUT << regexp << " match "<< sm.str() << endl);
@@ -2278,20 +2418,20 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 					t.tab = get_table({dict.get_rel(elem.e),{2}});
 					t[0] = mknum(iter->position(0)), t[1] = mknum(iter->position(0)+iter->length(0));
 					p.insert({t});
-					statterm++;		
-				}		
+					statterm++;
+				}
 			}
 		}
 		size_t removed = 0;
 		for( auto pit = g.begin(); pit != g.end(); )
 			if(regex_level > 1  && torem.count(pit->p[0]) > 0 && removed < (size_t)(regex_level-1)) {
 				o::ms()<<*pit<<endl;
-				pit = g.erase(pit);	
+				pit = g.erase(pit);
 				removed++;
 			} else pit++;
-		
+
 		o::ms()<<"REGEX: "<<"terms added:"<<statterm<<" production removed:"
-		<<removed<<" for "<< torem.size()<<endl;	
+		<<removed<<" for "<< torem.size()<<endl;
 	}
 	measure_time_end();
 	bool changed;
@@ -2309,15 +2449,15 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 	}
 	DBG(o::out()<<"grammar after:"<<endl);
 	DBG(for (production& p : g) o::out() << p << endl;)
-	
+
 	vector<term> v;
 	static const set<string> b =
 		{ "alpha", "alnum", "digit", "space", "printable" };
 	set<lexeme, lexcmp> builtins;
 	for (const string& s : b) builtins.insert(dict.get_lexeme(s));
-	
+
 	for (const production& x : g) {
-		
+
 		if (x.p.size() == 2 && x.p[1].e == "null") {
 			term t;
 			t.resize(2);
@@ -2331,7 +2471,7 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 			prog_after_fp.insert(move(af));
 			continue;
 		}
-		
+
 		// ref: maps ith sybmol production to resp. terms
 		std::map<size_t, term> refs;
 		DBG(o::dbg()<<x;)
@@ -2355,7 +2495,7 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 				t.tab = get_table({dict.get_rel(x.p[n].e),{2}});
 				if (n) t[0] = -n, t[1] = -n-1;
 				else t[0] = -1, t[1] = -(int_t)(x.p.size());
-			} else if (x.p[n].type == elem::CHR) {				
+			} else if (x.p[n].type == elem::CHR) {
 				unary_string us(sizeof(char32_t)*8);
 				us.buildfrom(u32string(1, x.p[n].ch));
 				int_t tv=n;
@@ -2367,16 +2507,16 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 					t[0] = -tv;
 					term plus1;
 					plus1.resize(3);
-					plus1.tab = -1; 
+					plus1.tab = -1;
 					plus1.extype = term::textype::ARITH;
 					plus1.arith_op = t_arith_op::ADD;
 					plus1[0] = -tv, plus1[1] = mknum(1), plus1[2] = -tv-1;
-					
+
 					v.push_back(move(plus1));
 					v.push_back(move(t));
 					// IMPROVE FIX: the symbol index n e.g. in len(i) should refer
 					// to what is the relative position inside the rhs of production. This
-					// should change when pbsz of unary_str is NOT sizeof(char32_t)*8. 					 
+					// should change when pbsz of unary_str is NOT sizeof(char32_t)*8.
 					refs[n] = v.back();
 					tv++;
 				}
@@ -2384,12 +2524,12 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 
 			} else return er("Unexpected grammar element");
 			v.push_back(move(t));
-			refs[n] = v.back(); 		
+			refs[n] = v.back();
 		}
 		// add vars to dictionary to avoid collision with new vars
-		for(int_t i =-1; i >= (int_t)-x.p.size(); i--) 
-			dict.get_var_lexeme_from(i);		
-		
+		for(int_t i =-1; i >= (int_t)-x.p.size(); i--)
+			dict.get_var_lexeme_from(i);
+
 		transform_grammar_constraints(x, v, p, refs);
 
 		//#define GRAMMAR_FOL
@@ -2399,12 +2539,12 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 		for(size_t n=1; n < v.size(); n++) {
 			form *cur = new form(form::ATOM, 0, &v[n]);
 			if(root) root = new form(form::AND, 0 , NULL, root, cur );
-			else root = cur;	
+			else root = cur;
 			for(int var : v[n])
 				minc = min(var, minc);
 		}
 
-		// adding quantifier since var indexes are added incrementally 
+		// adding quantifier since var indexes are added incrementally
 		for(int_t j = -1; j >= minc; j--) {
 			// ignore adding exist for vars for lhs first symbol of production
 			if( v[0][0] == j || v[0][1] == j ) continue;
@@ -2417,9 +2557,9 @@ bool tables::transform_grammar(vector<production> g, flat_prog& p, form*& /*r*/ 
 		#endif
 		p.insert(move(v));
 	}
-	if (print_transformed) print(print(o::to("transformed")
-		<< "after transform_grammar:\n", p)
-		<< "\nrun after a fixed point:\n", prog_after_fp)
+	if (opts.print_transformed) print(print(o::to("transformed")
+		<< "# after transform_grammar:\n", p)
+		<< "\n# run after a fixed point:\n", prog_after_fp)
 		<< endl;
 	return true;
 }
@@ -2525,12 +2665,22 @@ bool tables::add_prog(flat_prog m, const vector<production>& g, bool mknums) {
 	for (auto x : strs) load_string(x.first, x.second);
 	form *froot;
 	if (!transform_grammar(g, m, froot)) return false;
-	get_rules(move(m));
+	if (!get_rules(move(m))) return false;
+	// filter for rels starting and ending with __
+	auto filter_internal_tables = [] (const lexeme& l) {
+		size_t len = l[1] - l[0];
+		return len > 4 && '_' == l[0][0]     && '_' == l[0][1] &&
+				  '_' == l[0][len-2] && '_' == l[0][len-1];
+	};
+	ints internal_rels = dict.get_rels(filter_internal_tables);
+	for (auto& tbl : tbls)
+		for (int_t rel : internal_rels)
+			if (rel == tbl.s.first) { tbl.internal = true; break; }
 //	clock_t start, end;
 //	o::dbg()<<"load_string: ";
 //	measure_time_start();
 //	measure_time_end();
-	if (optimize) bdd::gc();
+	if (opts.optimize) bdd::gc();
 	return true;
 }
 
@@ -2578,103 +2728,7 @@ auto handle_cmp = [](const spbdd_handle& x, const spbdd_handle& y) {
 	return x->b < y->b;
 };
 
-void tables::alt_query_bltin(alt& a, bdd_handles& v1) {
-
-	spbdd_handle x = hfalse;
-
-	lexeme bltintype = dict.get_bltin(a.idbltin);
-	int_t bltinout = a.bltinargs.back(); // for those that have ?out
-
-	// for bitwise and pairwise operators that take bdds as inputs
-	// these bdds are result of body query executed above
-	std::vector<int_t> bltininputs;
-	for(size_t i = 0; i < a.bltinargs.size(); i++) {
-		if (a.bltinargs[i] < 0) bltininputs.push_back(a.bltinargs[i]);
-	}
-
-	if (bltintype == "count") {
-
-		x = v1[v1.size()-1]; //workaround until we review syntax/arguments for count
-
-		body& b = *a[a.size() - 1];
-
-		// old, official satcount algorithm, phased out
-		int_t cnt0 = bdd::satcount_k(x->b, b.ex, b.perm);
-		// new satcount based on the adjusted allsat_cb::sat (decompress)
-		if (b.inv.empty()) b.inv = b.init_perm_inv(a.varslen * bits);
-		int_t cnt = bdd::satcount(x, b.inv);
-		// just equate last var (output) with the count
-		x = from_sym(a.vm.at(bltinout), a.varslen, mknum(cnt));
-		v1.push_back(x);
-		o::dbg() << "alt_query (cnt):" << cnt << "" << endl;
-		if (cnt != cnt0)
-			o::dbg() << "(cnt0 != cnt):" << cnt0 << ", " << cnt << endl;
-	}
-	else if (bltintype == "rnd") {
-		DBG(assert(a.bltinargs.size() == 3););
-		// TODO: check that it's num const
-		int_t arg0 = int_t(a.bltinargs[0] >> 2);
-		int_t arg1 = int_t(a.bltinargs[1] >> 2);
-		if (arg0 > arg1) swap(arg0, arg1);
-
-		//int_t rnd = arg0 + (std::rand() % (arg1 - arg0 + 1));
-		std::random_device rd;
-		std::mt19937 gen(rd());
-		std::uniform_int_distribution<> distr(arg0, arg1);
-		int_t rnd = distr(gen);
-
-		x = from_sym(a.vm.at(bltinout), a.varslen, mknum(rnd));
-		v1.push_back(x);
-		o::dbg() << "alt_query (rnd):" << rnd << "" << endl;
-	}
-	else if (bltintype == "print") {
-		string ou{"output"};
-		size_t n{0};
-		// D: args are now [0,1,...] (we no longer have the bltin as 0 arg)
-		if (a.bltinargs.size() >= 2) ++n,
-			ou= to_string(lexeme2str(dict.get_sym(a.bltinargs[0])));
-		ostream_t& os = o::to(ou);
-		do {
-			int_t arg = a.bltinargs[n++];
-			if      (arg < 0) os << get_var_lexeme(arg) << endl;
-			else if (arg & 1) os << (char32_t) (arg >> 2);
-			else if (arg & 2) os << (int_t)  (arg >> 2);
-			else              os << dict.get_sym(arg);
-		} while (n < a.bltinargs.size());
-	}
-	else if (t_arith_op op = get_bwop(bltintype); op != t_arith_op::NOP) {
-		size_t arg0_id = a.vm.at(bltininputs[0]);
-		size_t arg1_id = a.vm.at(bltininputs[1]);
-		spbdd_handle arg0 = v1[2];
-		spbdd_handle arg1 = v1[3];
-		x = bitwise_handler(arg0_id, arg1_id, a.vm.at(bltinout),
-							arg0, arg1, a.varslen, op);
-		v1.push_back(x);
-	}
-	else if (t_arith_op op = get_pwop(bltintype); op != t_arith_op::NOP) {
-		size_t arg0_id = a.vm.at(bltininputs[0]);
-		size_t arg1_id = a.vm.at(bltininputs[1]);
-		spbdd_handle arg0 = v1[2];
-		spbdd_handle arg1 = v1[3];
-		x = pairwise_handler(arg0_id, arg1_id, a.vm.at(bltinout),
-							 arg0, arg1, a.varslen, op);
-		v1.push_back(x);
-	}
-}
-
 spbdd_handle tables::alt_query(alt& a, size_t /*DBG(len)*/) {
-
-	/*
-	//XXX: OK to remove?
-	spbdd_handle t = htrue;
-	for (auto x : a.order) {
-		bdd_handles v1;
-		v1.push_back(t);
-		for (auto y : x.first) v1.push_back(body_query(*a[y]));
-		t = bdd_and_many(move(v1)) / x.second;
-	}
-	v.push_back(a.rlast = deltail(t && a.rng, a.varslen, len));*/
-	//DBG(bdd::gc();)
 	if (a.f) {
 		bdd_handles f; //form
 		formula_query(a.f, f);
@@ -2700,13 +2754,14 @@ spbdd_handle tables::alt_query(alt& a, size_t /*DBG(len)*/) {
 	//NOTE: for over bdd arithmetic (currently handled as a bltin, although may change)
 	// In case arguments/ATOMS are the same than last iteration,
 	// here is were it should be avoided to recompute.
-	if (a.idbltin > -1) alt_query_bltin(a, v1) ;
+	spbdd_handle xg = htrue;
+	if (a.grnd) xg = alt_query(*(a.grnd), 0); // vars grounding query
+	body_builtins(xg, &a, v1);
 
 	sort(v1.begin(), v1.end(), handle_cmp);
 	if (v1 == a.last) return a.rlast;// { v.push_back(a.rlast); return; }
-	if (!bproof)
-		return	a.rlast =
-			bdd_and_many_ex_perm(a.last = move(v1), a.ex, a.perm);
+	if (!opts.bproof) return a.rlast =
+		bdd_and_many_ex_perm(a.last = move(v1), a.ex, a.perm);
 	a.levels.emplace(nstep, x = bdd_and_many(v1));
 //	if ((x = bdd_and_many_ex(a.last, a.ex)) != hfalse)
 //		v.push_back(a.rlast = x ^ a.perm);
@@ -2740,6 +2795,7 @@ char tables::fwd() noexcept {
 		bdd_handles v(r.size() == 0 ? 1 : r.size());
 		spbdd_handle x;
 		for (size_t n = 0; n != r.size(); ++n)
+			//print(COUT << "rule: ", r) << endl,
 			v[n] = alt_query(*r[n], r.len);
 		if (v == r.last) { if (datalog) continue; x = r.rlast; }
 		else r.last = v, x = r.rlast = bdd_or_many(move(v)) && r.eq;
@@ -2754,43 +2810,16 @@ char tables::fwd() noexcept {
 	static map<ntable, set<term>> mhits;
 	for (ntable tab = 0; (size_t)tab != tbls.size(); ++tab) {
 		table& tbl = tbls[tab];
+		if (tbl.is_builtin()) {
+			DBG(assert(tbl.del.empty());) // negated builtin fail
+			if (!tbl.add.empty()) {
+				head_builtin(tbl.add, tbl, tab);
+				tbl.add.clear();
+				if (unsat || halt) return true;
+			}
+		}
 		bool changes = tbl.commit(DBG(bits));
 		b |= changes;
-		if (!changes && tbl.idbltin > -1) {
-			//lexeme bltintype = dict.get_bltin(tbl.idbltin);
-			set<term>& ts = mhits[tab];
-			bool ishalt = false, isfail = false;
-			decompress(tbl.t, tab, [&ts, &tbl, &ishalt, &isfail, this]
-			(const term& t) {
-				if (ts.end() == ts.find(t)) {
-					// ...we have a new hit
-					ts.insert(t);
-					// do what we have to do, we have a new tuple
-					lexeme bltintype = dict.get_bltin(tbl.idbltin);
-					if (bltintype == "lprint") {
-						ostream_t& os = o::dbg() << endl;
-						// this is supposed to be formatted r-term printout
-						pair<raw_term, string> rtp{ to_raw_term(t), "p:" };
-						os << "printing: " << rtp << '.' << endl;
-					}
-					else if (bltintype == "halt") {
-						ishalt = true;
-						ostream_t& os = o::dbg() << endl;
-						pair<raw_term, string> rtp{ to_raw_term(t), "p:" };
-						os << "program halt: " << rtp << '.' << endl;
-					}
-					else if (bltintype == "fail") {
-						ishalt = isfail = true;
-						ostream_t& os = o::dbg() << endl;
-						pair<raw_term, string> rtp{ to_raw_term(t), "p:" };
-						os << "program fail: " << rtp << '.' << endl;
-					}
-				}
-			}, 0, true);
-			// 'true' to allow decompress to handle builtins too
-			if (isfail) return unsat = true; // to throw exception, TODO:
-			if (ishalt) return false;
-		}
 		if (tbl.unsat) return unsat = true;
 	}
 	return b;
@@ -2823,24 +2852,118 @@ bool tables::infloop_detected() {
 	return false;
 }
 
+// adds __fp__ fact and returns true if __fp__ fact does not exist
+bool tables::add_fixed_point_fact() {
+	raw_term rt;
+	rt.arity = { 0 };
+	rt.e.emplace_back(elem::SYM, dict.get_lexeme(string("__fp__")));
+	term t = from_raw_term(rt);
+	bool exists = false;
+	decompress(tbls[t.tab].t && from_fact(t), t.tab,
+		[&exists](const term& /*t*/) { exists = true; }, t.size());
+	if (!exists) tbls[t.tab].t = tbls[t.tab].t || from_fact(t); // add if ne
+	tbls[t.tab].internal = true;
+	return !exists;
+}
+
 bool tables::pfp(size_t nsteps, size_t break_on_step) {
 	error = false;
-	if (bproof) levels.emplace_back(get_front());
-	level l;
+	level l = get_front();
+	fronts.push_back(l);
+	if (opts.bproof) levels.emplace_back(l);
 	for (;;) {
-		if (print_steps || optimize)
+		if (print_steps || opts.optimize)
 			o::inf() << "# step: " << nstep << endl;
 		++nstep;
-		if (!fwd()) return true; // FP found
+		bool fwd_ret = fwd();
+		if (halt) return true;
+		level l = get_front();
+		if (!fwd_ret) {
+			if(opts.fp_step && add_fixed_point_fact()) return pfp();
+			else return fronts.push_back(l), true;
+		} else  fronts.push_back(l);
+		if (halt) return true;
 		if (unsat) return contradiction_detected();
 		if ((break_on_step && nstep == break_on_step) ||
 			(nsteps && nstep == nsteps)) return false; // no FP yet
-		l = get_front();
-		if (!datalog && !fronts.emplace(l).second)
-			return infloop_detected();
-		if (bproof) levels.push_back(move(l));
+		bool is_repeat =
+			std::find(fronts.begin(), fronts.end() - 1, l) != fronts.end() - 1;
+		if (!datalog && is_repeat)
+			return opts.pfp3 ? true : infloop_detected();
+		if (opts.bproof) levels.push_back(move(l));
 	}
 	DBGFAIL;
+}
+
+/* Run the given program with the given settings, put the query
+ * results into the given out-parameter, and return true in the case
+ * that it reaches a fixed point. Otherwise just return false. */
+
+bool tables::run_prog(const raw_prog &rp, dict_t &dict, const ::options &opts,
+	std::set<raw_term> &results)
+{
+	tables::options to;
+	to.bproof            = opts.enabled("proof");
+	to.optimize          = opts.enabled("optimize");
+	to.bin_transform     = opts.enabled("bin");
+	to.print_transformed = opts.enabled("t");
+	to.apply_regexpmatch = opts.enabled("regex");
+	tables tbl(dict, to);
+	strs_t strs;
+	if(tbl.run_prog(rp, strs)) {
+		for(const term &result : tbl.decompress()) {
+			results.insert(tbl.to_raw_term(result));
+		}
+		return true;
+	} else {
+		return false;
+	}
+}
+
+/* Run the given program on the given extensional database and yield
+ * the derived facts. Returns true or false depending on whether the
+ * given program reaches a fixed point. Useful for query containment
+ * checks. */
+
+bool tables::run_prog(const std::set<raw_term> &edb, raw_prog rp,
+	dict_t &dict, const ::options &opts, std::set<raw_term> &results)
+{
+	std::map<elem, elem> freeze_map, unfreeze_map;
+	// Create a duplicate of each rule in the given program under a
+	// generated alias.
+	for(int_t i = rp.r.size() - 1; i >= 0; i--) {
+		for(raw_term &rt : rp.r[i].h) {
+			raw_term rt2 = rt;
+			auto it = freeze_map.find(rt.e[0]);
+			if(it != freeze_map.end()) {
+				rt.e[0] = it->second;
+			} else {
+				elem frozen_elem = elem::fresh_temp_sym(dict);
+				// Store the mapping so that the derived portion of each
+				// relation is stored in exactly one place
+				unfreeze_map[frozen_elem] = rt.e[0];
+				rt.e[0] = freeze_map[rt.e[0]] = frozen_elem;
+			}
+			rp.r.push_back(raw_rule(rt2, rt));
+		}
+	}
+	// Now add the extensional database to the given program.
+	for(const raw_term &rt : edb) {
+		rp.r.push_back(raw_rule(rt));
+	}
+	// Run the program to obtain the results which we will then filter
+	std::set<raw_term> tmp_results;
+	bool result = run_prog(rp, dict, opts, tmp_results);
+	// Filter out the result terms that are not derived and rename those
+	// that are derived back to their original names.
+	for(raw_term res : tmp_results) {
+		auto jt = unfreeze_map.find(res.e[0]);
+		if(jt != unfreeze_map.end()) {
+			res.e[0] = jt->second;
+			results.insert(res);
+		}
+	}
+	return result;
 }
 
 bool tables::run_prog(const raw_prog& p, const strs_t& strs, size_t steps,
@@ -2848,19 +2971,29 @@ bool tables::run_prog(const raw_prog& p, const strs_t& strs, size_t steps,
 {
 	clock_t start{}, end;
 	double t;
-	if (optimize) measure_time_start();
+	if (opts.optimize) measure_time_start();
+	if (opts.bitunv) typenv.build_from(p.vts);
 	if (!add_prog(p, strs)) return false;
-	if (optimize) {
+	if (opts.optimize) {
 		end = clock(), t = double(end - start) / CLOCKS_PER_SEC;
 		o::ms() << "# pfp: ";
 		measure_time_start();
 	}
+	DBG(o::dbg()<<endl<<p<<endl);
+
 	nlevel begstep = nstep;
-	bool r = pfp(steps ? nstep + steps : 0, break_on_step);
+	bool r = true;
+	// run program only if there are any rules
+	if (rules.size()) {
+		fronts.clear();
+		r = pfp(steps ? nstep + steps : 0, break_on_step);
+	} else {
+		level l = get_front();
+		fronts = {l, l};
+	}
 	size_t went = nstep - begstep;
 	if (r && prog_after_fp.size()) {
 		if (!add_prog(move(prog_after_fp), {}, false)) return false;
-		COUT<<"running"<<endl;
 		r = pfp();
 	}
 	if (r && p.nps.size()) { // after a FP run the seq. of nested progs
@@ -2871,21 +3004,17 @@ bool tables::run_prog(const raw_prog& p, const strs_t& strs, size_t steps,
 			if (!r && went >= steps) break;
 		}
 	}
-	if (optimize)
+	if (opts.optimize)
 		(o::ms() <<"add_prog: "<<t << " pfp: "),
 		measure_time_end();
 	return r;
 }
 
-tables::tables(dict_t dict, bool bproof, bool optimize, bool bin_transform,
-	bool print_transformed, bool apply_regexpmatch, bool keep_guards) :
-	dict(move(dict)), bproof(bproof), optimize(optimize),
-	bin_transform(bin_transform), print_transformed(print_transformed),
-	apply_regexpmatch(apply_regexpmatch), keep_guards(keep_guards) {}
-	// dict(*new dict_t)
+tables::tables(dict_t dict, tables::options opts) :
+	dict(move(dict)), opts(move(opts)) {}
 
 tables::~tables() {
-	//if (optimize) delete &dict;
+	//if (opts.optimize) delete &dict;
 	while (!bodies.empty()) {
 		body *b = *bodies.begin();
 		bodies.erase(bodies.begin());

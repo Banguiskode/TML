@@ -794,13 +794,13 @@ archive& archive::operator<<(const table& t) {
 	//POS("table r")
 	*this << t.r;
 	//POS("table bools(ext, unsat, tmp)")
-	*this << enc_bools({ t.ext, t.unsat, t.tmp });
+	*this << enc_bools({ 0, t.unsat, t.tmp });
 	//POS("table idbltin")
 	*this << t.idbltin;
 	//POS("table bltinargs")
-	*this << t.bltinargs;
-	//POS("table bltinsize")
-	*this << t.bltinsize;
+//	*this << t.bltinargs;
+//	//POS("table bltinsize")
+//	*this << t.bltinsize;
 	//POS("table end")
 	return *this;
 }
@@ -821,15 +821,15 @@ archive& archive::read_table(tables& tbls) {
 	*this >> t.r;
 	//POS("table bools(ext, unsat, tmp)")
 	*this >> bls;
-	t.ext   = dec_bool(bls),
+	//t.ext   = dec_bool(bls),
 	t.unsat = dec_bool(bls, 1),
 	t.tmp   = dec_bool(bls, 2);
 	//POS("table idbltin")
 	*this >> t.idbltin;
 	//POS("table bltinargs")
-	*this >> t.bltinargs;
-	//POS("table bltinsize")
-	*this >> t.bltinsize;
+//	*this >> t.bltinargs;
+//	//POS("table bltinsize")
+//	*this >> t.bltinsize;
 	//POS("table end")
 	return *this;
 }
@@ -850,9 +850,9 @@ size_t archive::size(const table& t) {
 	//SPOS("table idbltin", t.idbltin)
 	s += size(t.idbltin);
 	//SPOS("table bltinargs", t.bltinargs)
-	s += size(t.bltinargs);
-	//SPOS("table bltinsize", t.bltinsize)
-	s += size(t.bltinsize);
+//	s += size(t.bltinargs);
+//	//SPOS("table bltinsize", t.bltinsize)
+//	s += size(t.bltinsize);
 	//DBG(o::dbg() << "table size: " << t.sign.first << '/' << t.sign.second[0] << ' ' << s
 	//	<< " size(bm): " << size(t.bm)
 	//	<< " (t.bltinargs.size(): " << t.bltinargs.size()
@@ -1291,13 +1291,13 @@ size_t archive::size(const driver& d) {
 	//	<< " tbls: " << size(*(d.tbl))
 	//	//<< " (includes dict: " << size(d.tbl->dict) << ")"
 	//	<< " bdd: " << bdd_size()
-	//	<< " (" << V->size() << " nodes)" << std::endl;)
+	//	<< " (" << V.size() << " nodes)" << std::endl;)
 	return s;
 }
 
 archive& archive::write_bdd() {
-	*this << V->size();
-	write(V->data(), V->size() * 3 * sizeof(int_t));
+	*this << V.size();
+	write(V.data(), V.size() * 3 * sizeof(int_t));
 	return *this;
 }
 archive& archive::read_bdd() {
@@ -1307,10 +1307,10 @@ archive& archive::read_bdd() {
 	//COUT << "nsize: " << nsize << endl;
 	size_t s = nsize * 3 * sizeof(int_t);
 	//COUT << "loading bdd size: " << nsize << " " << s << endl;
-	V = std::make_unique<bdd_mmap>(nsize, bdd{0,0,0},
+	V = bdd_mmap(nsize, bdd{0,0,0},
 		memory_map_allocator<bdd>("", bdd_mmap_mode));
-	read((char *)V->data(), s);
-	//for (size_t i = 0; i != V->size(); ++i) {
+	read((char *)V.data(), s);
+	//for (size_t i = 0; i != V.size(); ++i) {
 	//	bdd& b = (*V)[i];
 	//	DBG(COUT << i << " "
 	//		<< b.v << ' '
@@ -1320,7 +1320,7 @@ archive& archive::read_bdd() {
 	return *this;
 }
 size_t archive::bdd_size() {
-	size_t s = V->size() * 3 * sizeof(int_t) + sizeof(size_t);
+	size_t s = V.size() * 3 * sizeof(int_t) + sizeof(size_t);
 	return s;
 }
 
