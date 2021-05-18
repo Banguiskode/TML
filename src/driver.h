@@ -24,7 +24,6 @@
 #include "dict.h"
 #include "output.h"
 #include "options.h"
-#include "analysis.h"
 
 
 typedef enum prolog_dialect { XSB, SWIPL } prolog_dialect;
@@ -110,6 +109,7 @@ class driver {
 	bool transform_quotes(raw_prog &rp, const directive &drt);
 	bool transform_domains(raw_prog &rp, const directive& drt);
 	bool transform_codecs(raw_prog &rp, const directive &drt);
+	sprawformtree expand_formula_node(const sprawformtree &t);
 	void flatten_associative(const elem::etype &tp,
 		const sprawformtree &tree, std::vector<sprawformtree> &tms);
 	bool is_cq(const raw_rule &rr);
@@ -118,8 +118,6 @@ class driver {
 	int_t count_related_rules(const raw_rule &rr1, const raw_prog &rp);
 	void step_transform(raw_prog &rp,
 		const std::function<void(raw_prog &)> &f);
-	void unary_transform(raw_prog &rp);
-	void binary_transform(raw_prog &rp);
 	void recursive_transform(raw_prog &rp,
 		const std::function<void(raw_prog &)> &f);
 	raw_rule freeze_rule(raw_rule rr, std::map<elem, elem> &freeze_map,
