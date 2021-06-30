@@ -27,6 +27,9 @@
 #include "memory_map.h"
 
 class archive;
+class environment;
+class context;
+
 #define lexeme2str(l) string_t((l)[0], (l)[1]-(l)[0])
 
 enum state_value { INIT, START, ADDS, DELS, RULE, COND, FP, CURR };
@@ -233,6 +236,8 @@ public:
 
 struct raw_form_tree;
 typedef std::shared_ptr<raw_form_tree> sprawformtree;
+typedef std::shared_ptr<struct context> spenvcontext;
+typedef std::shared_ptr<class environment> spenvironment;
 
 struct raw_prog;
 
@@ -257,8 +262,8 @@ struct elem {
 	int_t num = 0; // NUM's number or BLTIN's forget/renew bits
 	// The string that represents variants of this element.
 	lexeme e{ 0, 0 };
-	char32_t ch;
-	elem() {}
+	char32_t ch = 0;
+	elem() {};
 	elem(int_t num) : type(NUM), num(num) {}
 	elem(char32_t ch) : type(CHR), ch(ch) {}
 	elem(etype type) : type(type) {
@@ -347,10 +352,11 @@ struct primtype : utype {
 	bool operator==(const primtype& r) const {
 		return ty == r.ty && bsz == r.bsz;		
 	}
+	primtype(_ptype _ty = NOP): ty(_ty){}
 	bool operator!=(const primtype& r) const {
 		return !(*this == r);		
 	}
-	std::string to_print(){
+	std::string to_print() const{
 		std::string s;
 		switch(ty){
 			case UINT: s.append("int"); break;
@@ -366,9 +372,12 @@ struct primtype : utype {
 		}
 		return s;
 	}
-	size_t get_bitsz(){
+	int_t get_maxbits() const {
+		return 64;
+	}
+	size_t get_bitsz() const {
 		switch(ty){
-			case UINT: return bsz > 0 && bsz <= 32 ? bsz: 16;
+			case UINT: return bsz > 0 && bsz <= get_maxbits() ? bsz: 8;
 			case UCHAR: return 8;
 			case SYMB: return 8;
 			default: return 0;
@@ -398,16 +407,25 @@ struct typedecl {
 	primtype pty;  
 	elem structname; // struct type
 	std::vector<elem> vars;
-	bool is_primitive(){
+	bool is_primitive() const{
 		DBG(assert(structname.e[0] == NULL || pty.ty == primtype::NOP));
 		return pty.ty != primtype::NOP;
 	}
-	bool is_usertype(){
+	bool is_usertype() const{
 		DBG(assert(structname.e[0] == NULL || pty.ty == primtype::NOP));
 		return structname.e[0] != NULL;
 	}
-	size_t get_param_count() {
+	size_t get_param_count() const {
 		return vars.size();
+	}
+	std::string to_print() const {
+		std::string ret;
+		if(is_primitive())
+			ret.append(pty.to_print());
+		else ret.append(structname.to_str());
+		for( const elem &e :  vars )
+			ret.append(" "), ret.append(e.to_str());
+		return ret;
 	}
 
 	bool parse(input *in , const raw_prog& prog, bool multivar = true);
@@ -428,10 +446,6 @@ struct typestmt {
 
 };
 
-class bit_dict;
-struct bit_term;
-struct bit_prog;
-struct bit_rule;
 struct raw_term;
 struct raw_prog;
 struct raw_rule;
@@ -448,47 +462,6 @@ class bit_dict {
 	}
 };
 
-struct bit_elem {
-	const elem &e;
-	size_t bsz;
-	bit_term &pbt;
-	bools p;
-	bit_elem(const elem &_e, size_t _bsz, bit_term &_pbt);
-	size_t pos(size_t bit_from_right /*, size_t arg, size_t args */) const;
-	bool to_elem( std::vector<elem> &) const;
-	void to_print() const;
-};
-struct bit_prog {
-	 
-	std::vector<bit_rule> vbr;
-	std::vector<bit_prog> nbp;
-	const raw_prog &rp;
-	bit_dict bdict;
-	bit_prog( const raw_prog& _rp);
-	bool to_raw_prog(raw_prog &) const;
-	void to_print() const;
-};
-
-struct bit_rule {
-	std::vector<bit_term> bh;
-	std::vector<std::vector<bit_term>> bb;
-	const raw_rule &rr;
-	bit_prog &pbp;
-	bit_rule(const raw_rule &_rr, bit_prog &_pbp);
-	bool to_raw_rule(raw_rule&) const;
-	void to_print() const;
-};
-
-struct bit_term {
-	int_t rel;
-	std::vector<bit_elem> vbelem;
-	const raw_term &rt;
-	bit_rule &pbr;
-	bit_term(const raw_term &_rt, bit_rule &_pbr); 
-	size_t get_typeinfo(size_t arg, const raw_term &rt);
-	bool to_raw_term(raw_term&) const;
-	void to_print() const;
-};
 
 
 /* A raw term is produced from the parsing stage. In TML source code, it
@@ -616,8 +589,9 @@ struct raw_rule {
 	// prft != nullptr, otherwise it signifies that this rule is a fact.
 	std::vector<std::vector<raw_term>> b;
 	// Contains a tree representing the logical formula.
-	sprawformtree prft = nullptr;
+	sprawformtree prft = nullptr; 
 
+	mutable spenvcontext varctx = nullptr;
 	enum etype { NONE, GOAL, TREE };
 	etype type = NONE;
 	bool guarding = false;
@@ -646,6 +620,12 @@ struct raw_rule {
 	void set_b(const std::vector<std::vector<raw_term>> &_b) {
 		b = _b;
 		prft = nullptr;
+	}
+	void update_context(const spenvcontext &_c) const { 
+		varctx = _c;
+	}
+	spenvcontext get_context() const {
+		return varctx;	
 	}
 	void update_states(std::array<bool, 8>& has) {
 		if (is_form() || is_rule()) has[RULE] = true;
@@ -744,7 +724,7 @@ struct raw_prog {
 	std::vector<guard_statement> gs;
 	std::vector<struct typestmt> vts;
 	std::vector<raw_prog> nps;
-	std::vector<environment> typenv;
+	std::vector<environment> typenv; // only one item;
 
 	std::set<lexeme, lexcmp> builtins;
 //	int_t delrel = -1;
@@ -836,6 +816,5 @@ bool operator==(const lexeme& l, const char* s);
 bool operator<(const raw_term& x, const raw_term& y);
 bool operator<(const raw_rule& x, const raw_rule& y);
 void parser_test();
-
 
 #endif
